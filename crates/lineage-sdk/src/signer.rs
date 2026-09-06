@@ -3,7 +3,7 @@
 use crate::client::Client;
 use crate::error::{Error, Result};
 use crate::tx::{build_signed_payment, PayOutput, SpendInput};
-use crate::wallet::wallet::Wallet;
+use crate::wallet::Wallet;
 
 /// Result of a successfully submitted payment.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -14,6 +14,10 @@ pub struct Receipt {
 }
 
 /// A backend capable of paying an address from wallet-held funds.
+///
+/// The `pay` future is not `Send`-bounded; the SDK is used from a single async
+/// context (the CLI), not spawned across threads.
+#[allow(async_fn_in_trait)]
 pub trait Signer {
     async fn pay(&self, to: &str, amount: u64) -> Result<Receipt>;
 }
