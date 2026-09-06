@@ -1,8 +1,11 @@
 //! HTTP client for the Lineage /v1 API.
 
+use std::collections::BTreeMap;
+
 use serde::de::DeserializeOwned;
 
 use crate::error::{ApiProblem, Error, Result};
+use crate::models::{BalancesResponse, DebugData, Supply, TxStatus};
 
 #[derive(Debug, Clone)]
 pub struct Hosts {
@@ -72,6 +75,70 @@ impl Client {
     }
 }
 
+#[derive(Debug, Clone, Copy)]
+pub enum NodeClass {
+    Mempool,
+    Storage,
+    Miner,
+}
+
+impl Client {
+    fn base_for(&self, class: NodeClass) -> String {
+        match class {
+            NodeClass::Mempool => self.hosts.mempool.clone(),
+            NodeClass::Storage => self.hosts.storage.clone(),
+            NodeClass::Miner => self.hosts.miner.clone(),
+        }
+    }
+
+    pub async fn supply(&self) -> Result<Supply> {
+        let base = self.base_for(NodeClass::Mempool);
+        self.get_json(&base, "/v1/supply", &[]).await
+    }
+
+    pub async fn balances(&self, addresses: &[&str]) -> Result<BalancesResponse> {
+        let base = self.base_for(NodeClass::Mempool);
+        let query: Vec<(&str, String)> = addresses.iter().map(|a| ("address", a.to_string())).collect();
+        self.get_json(&base, "/v1/balances", &query).await
+    }
+
+    pub async fn transaction_status(&self, tx_hash: &str) -> Result<BTreeMap<String, TxStatus>> {
+        let base = self.base_for(NodeClass::Mempool);
+        self.get_json(&base, "/v1/transactions/status", &[("tx_hash", tx_hash.to_string())]).await
+    }
+
+    pub async fn latest_block(&self) -> Result<serde_json::Value> {
+        let base = self.base_for(NodeClass::Storage);
+        self.get_json(&base, "/v1/blocks/latest", &[]).await
+    }
+
+    pub async fn block_by_num(&self, num: u64) -> Result<serde_json::Value> {
+        let base = self.base_for(NodeClass::Storage);
+        self.get_json(&base, &format!("/v1/blocks/{num}"), &[]).await
+    }
+
+    pub async fn blocks(&self, nums: &[u64]) -> Result<serde_json::Value> {
+        let base = self.base_for(NodeClass::Storage);
+        let query: Vec<(&str, String)> = nums.iter().map(|n| ("num", n.to_string())).collect();
+        self.get_json(&base, "/v1/blocks", &query).await
+    }
+
+    pub async fn blockchain_entry(&self, key: &str) -> Result<serde_json::Value> {
+        let base = self.base_for(NodeClass::Storage);
+        self.get_json(&base, &format!("/v1/blockchain-entries/{key}"), &[]).await
+    }
+
+    pub async fn current_mining_block(&self) -> Result<serde_json::Value> {
+        let base = self.base_for(NodeClass::Miner);
+        self.get_json(&base, "/v1/mining/current-block", &[]).await
+    }
+
+    pub async fn debug(&self, class: NodeClass) -> Result<DebugData> {
+        let base = self.base_for(class);
+        self.get_json(&base, "/v1/debug", &[]).await
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -138,5 +205,47 @@ mod tests {
         let client = client_for(&server).with_api_key("secret");
         let _: serde_json::Value = client.get_json(&client.hosts().mempool.clone(), "/v1/debug", &[]).await.unwrap();
         // If the header did not match, wiremock returns 404 and this unwrap panics.
+    }
+
+    #[tokio::test]
+    async fn supply_hits_mempool_and_types_response() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/v1/supply"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({"total":360360000000000000u64,"issued":42})))
+            .mount(&server)
+            .await;
+        let client = client_for(&server);
+        let s = client.supply().await.unwrap();
+        assert_eq!(s.issued, 42);
+    }
+
+    #[tokio::test]
+    async fn balances_sends_repeated_address_query() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/v1/balances"))
+            .and(wiremock::matchers::query_param("address", "a1"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "balance": {"address_list": {}, "total": {"tokens": 0, "items": {}}}
+            })))
+            .mount(&server)
+            .await;
+        let client = client_for(&server);
+        let r = client.balances(&["a1"]).await.unwrap();
+        assert_eq!(r.balance.total.tokens, 0);
+    }
+
+    #[tokio::test]
+    async fn latest_block_hits_storage() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/v1/blocks/latest"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({"block":{"block":{"header":{"b_num":5373}}}})))
+            .mount(&server)
+            .await;
+        let client = client_for(&server);
+        let v = client.latest_block().await.unwrap();
+        assert_eq!(v["block"]["block"]["header"]["b_num"], 5373);
     }
 }
