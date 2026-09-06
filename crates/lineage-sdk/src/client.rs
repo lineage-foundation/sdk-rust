@@ -69,6 +69,33 @@ impl Client {
             Err(Error::Api(problem))
         }
     }
+
+    pub(crate) async fn post_json<T: DeserializeOwned>(
+        &self,
+        base: &str,
+        path: &str,
+        body: &serde_json::Value,
+    ) -> Result<T> {
+        let url = format!("{base}{path}");
+        let mut req = self.http.post(url).json(body);
+        if let Some(key) = &self.api_key {
+            req = req.header("x-api-key", key);
+        }
+        let resp = req.send().await?;
+        let status = resp.status();
+        let bytes = resp.bytes().await?;
+        if status.is_success() {
+            Ok(serde_json::from_slice(&bytes)?)
+        } else {
+            let problem: ApiProblem = serde_json::from_slice(&bytes).unwrap_or(ApiProblem {
+                status: status.as_u16(),
+                title: None,
+                detail: Some(String::from_utf8_lossy(&bytes).into_owned()),
+                request_id: None,
+            });
+            Err(Error::Api(problem))
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -132,6 +159,13 @@ impl Client {
     pub async fn debug(&self, class: NodeClass) -> Result<DebugData> {
         let base = self.base_for(class);
         self.get_json(&base, "/v1/debug", &[]).await
+    }
+
+    /// Submits signed transactions to the mempool for inclusion.
+    pub async fn submit_transactions(&self, txs: &[serde_json::Value]) -> Result<serde_json::Value> {
+        let base = self.base_for(NodeClass::Mempool);
+        let body = serde_json::json!({ "transactions": txs });
+        self.post_json(&base, "/v1/transactions", &body).await
     }
 }
 
@@ -230,6 +264,22 @@ mod tests {
         let client = client_for(&server);
         let r = client.balances(&["a1"]).await.unwrap();
         assert_eq!(r.balance.total.tokens, 0);
+    }
+
+    #[tokio::test]
+    async fn submit_transactions_posts_envelope() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/transactions"))
+            .respond_with(ResponseTemplate::new(201).set_body_json(serde_json::json!({"transactions": {}})))
+            .mount(&server)
+            .await;
+        let client = client_for(&server);
+        let r = client
+            .submit_transactions(&[serde_json::json!({"inputs":[],"outputs":[],"version":1,"fees":null,"druid_info":null})])
+            .await
+            .unwrap();
+        assert!(r["transactions"].is_object());
     }
 
     #[tokio::test]
