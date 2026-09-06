@@ -7,6 +7,7 @@ pub mod amount;
 pub mod client;
 pub mod error;
 pub mod models;
+pub mod wallet;
 
 pub use amount::{Tokens, RAW_PER_LNGX};
 pub use client::{Client, Hosts, NodeClass};
