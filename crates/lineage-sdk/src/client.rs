@@ -43,10 +43,6 @@ impl Client {
         })
     }
 
-    pub(crate) fn hosts(&self) -> &Hosts {
-        &self.hosts
-    }
-
     pub(crate) async fn get_json<T: DeserializeOwned>(
         &self,
         base: &str,
@@ -163,7 +159,7 @@ mod tests {
             .mount(&server)
             .await;
         let client = client_for(&server);
-        let v: serde_json::Value = client.get_json(&client.hosts().mempool.clone(), "/v1/ping", &[]).await.unwrap();
+        let v: serde_json::Value = client.get_json(&client.hosts.mempool.clone(), "/v1/ping", &[]).await.unwrap();
         assert_eq!(v["ok"], true);
     }
 
@@ -181,7 +177,7 @@ mod tests {
             .await;
         let client = client_for(&server);
         let err = client
-            .get_json::<serde_json::Value>(&client.hosts().storage.clone(), "/v1/blocks/9999", &[])
+            .get_json::<serde_json::Value>(&client.hosts.storage.clone(), "/v1/blocks/9999", &[])
             .await
             .unwrap_err();
         match err {
@@ -203,7 +199,7 @@ mod tests {
             .mount(&server)
             .await;
         let client = client_for(&server).with_api_key("secret");
-        let _: serde_json::Value = client.get_json(&client.hosts().mempool.clone(), "/v1/debug", &[]).await.unwrap();
+        let _: serde_json::Value = client.get_json(&client.hosts.mempool.clone(), "/v1/debug", &[]).await.unwrap();
         // If the header did not match, wiremock returns 404 and this unwrap panics.
     }
 
