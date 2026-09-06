@@ -161,6 +161,38 @@ impl Client {
         self.get_json(&base, "/v1/debug", &[]).await
     }
 
+    /// Submits a raw item (e.g. a transaction or block) to the mempool's item store.
+    pub async fn post_items(&self, body: serde_json::Value) -> Result<serde_json::Value> {
+        let base = self.base_for(NodeClass::Mempool);
+        self.post_json(&base, "/v1/items", &body).await
+    }
+
+    /// Queries balances for a batch of addresses via the mempool's POST endpoint.
+    pub async fn query_balances(&self, addresses: &[&str]) -> Result<BalancesResponse> {
+        let base = self.base_for(NodeClass::Mempool);
+        let body = serde_json::json!({ "addresses": addresses });
+        self.post_json(&base, "/v1/balances/query", &body).await
+    }
+
+    /// Queries transaction status for a batch of hashes via the mempool's POST endpoint.
+    pub async fn query_transaction_status(&self, hashes: &[&str]) -> Result<BTreeMap<String, TxStatus>> {
+        let base = self.base_for(NodeClass::Mempool);
+        let body = serde_json::json!({ "hashes": hashes });
+        self.post_json(&base, "/v1/transactions/status:query", &body).await
+    }
+
+    /// Serializes transactions to their wire hex form via the coupled user node.
+    pub async fn serialize_transactions(&self, txs: serde_json::Value) -> Result<serde_json::Value> {
+        let base = self.base_for(NodeClass::Miner);
+        self.post_json(&base, "/v1/transactions:serialize", &txs).await
+    }
+
+    /// Deserializes wire hex transactions back to their JSON form via the coupled user node.
+    pub async fn deserialize_transactions(&self, hexes: serde_json::Value) -> Result<serde_json::Value> {
+        let base = self.base_for(NodeClass::Miner);
+        self.post_json(&base, "/v1/transactions:deserialize", &hexes).await
+    }
+
     /// Submits signed transactions to the mempool for inclusion.
     pub async fn submit_transactions(&self, txs: &[serde_json::Value]) -> Result<serde_json::Value> {
         let base = self.base_for(NodeClass::Mempool);
@@ -300,6 +332,81 @@ mod tests {
             .await
             .unwrap();
         assert!(r["transactions"].is_object());
+    }
+
+    #[tokio::test]
+    async fn post_items_posts_to_mempool() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/items"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({"accepted": true})))
+            .mount(&server)
+            .await;
+        let client = client_for(&server);
+        let r = client.post_items(serde_json::json!({"key": "value"})).await.unwrap();
+        assert_eq!(r["accepted"], true);
+    }
+
+    #[tokio::test]
+    async fn query_balances_posts_addresses() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/balances/query"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "balance": {"address_list": {}, "total": {"tokens": 5, "items": {}}}
+            })))
+            .mount(&server)
+            .await;
+        let client = client_for(&server);
+        let r = client.query_balances(&["a1", "a2"]).await.unwrap();
+        assert_eq!(r.balance.total.tokens, 5);
+    }
+
+    #[tokio::test]
+    async fn query_transaction_status_posts_hashes() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/transactions/status:query"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "h1": {"status": "Confirmed", "timestamp": 123, "additional_info": ""}
+            })))
+            .mount(&server)
+            .await;
+        let client = client_for(&server);
+        let r = client.query_transaction_status(&["h1"]).await.unwrap();
+        assert_eq!(r["h1"].status, "Confirmed");
+    }
+
+    #[tokio::test]
+    async fn serialize_transactions_hits_miner() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/transactions:serialize"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!(["deadbeef"])))
+            .mount(&server)
+            .await;
+        let client = client_for(&server);
+        let r = client
+            .serialize_transactions(serde_json::json!({"transactions": []}))
+            .await
+            .unwrap();
+        assert_eq!(r[0], "deadbeef");
+    }
+
+    #[tokio::test]
+    async fn deserialize_transactions_hits_miner() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/transactions:deserialize"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({"transactions": []})))
+            .mount(&server)
+            .await;
+        let client = client_for(&server);
+        let r = client
+            .deserialize_transactions(serde_json::json!(["deadbeef"]))
+            .await
+            .unwrap();
+        assert!(r["transactions"].is_array());
     }
 
     #[tokio::test]
