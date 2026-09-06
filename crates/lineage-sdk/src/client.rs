@@ -5,7 +5,7 @@ use std::collections::BTreeMap;
 use serde::de::DeserializeOwned;
 
 use crate::error::{ApiProblem, Error, Result};
-use crate::models::{BalancesResponse, DebugData, Supply, TxStatus};
+use crate::models::{BalancesResponse, DebugData, PaymentAccepted, Supply, TxStatus};
 
 #[derive(Debug, Clone)]
 pub struct Hosts {
@@ -166,6 +166,26 @@ impl Client {
         let base = self.base_for(NodeClass::Mempool);
         let body = serde_json::json!({ "transactions": txs });
         self.post_json(&base, "/v1/transactions", &body).await
+    }
+
+    /// Requests a node-signed payment from the miner's wallet.
+    pub async fn make_payment(
+        &self,
+        kind: &str,
+        address: &str,
+        amount: u64,
+        passphrase: &str,
+        locktime: Option<u64>,
+    ) -> Result<PaymentAccepted> {
+        let base = self.base_for(NodeClass::Miner);
+        let body = serde_json::json!({
+            "kind": kind,
+            "address": address,
+            "amount": amount,
+            "passphrase": passphrase,
+            "locktime": locktime,
+        });
+        self.post_json(&base, "/v1/payments", &body).await
     }
 }
 

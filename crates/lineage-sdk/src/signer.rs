@@ -94,6 +94,36 @@ impl<'a> Signer for LocalSigner<'a> {
     }
 }
 
+/// Delegates signing to a node's wallet via `POST /v1/payments`.
+pub struct NodeSigner<'a> {
+    client: &'a Client,
+    passphrase: String,
+}
+
+impl<'a> NodeSigner<'a> {
+    pub fn new(client: &'a Client, passphrase: impl Into<String>) -> Self {
+        NodeSigner {
+            client,
+            passphrase: passphrase.into(),
+        }
+    }
+}
+
+impl<'a> Signer for NodeSigner<'a> {
+    async fn pay(&self, to: &str, amount: u64) -> Result<Receipt> {
+        let accepted = self
+            .client
+            .make_payment("address", to, amount, &self.passphrase, None)
+            .await?;
+
+        Ok(Receipt {
+            tx_hash: accepted.tx_hash.unwrap_or_default(),
+            to_address: to.to_string(),
+            amount,
+        })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -151,5 +181,28 @@ mod tests {
         assert_eq!(receipt.to_address, "recipient-address");
         assert_eq!(receipt.amount, 1000);
         assert!(!receipt.tx_hash.is_empty());
+    }
+
+    #[tokio::test]
+    async fn node_signer_pay_posts_payment_and_returns_receipt() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/payments"))
+            .respond_with(ResponseTemplate::new(202).set_body_json(serde_json::json!({
+                "to_address": "recipient-address",
+                "amount": {"kind": "token", "amount": 1000},
+                "tx_hash": "g.."
+            })))
+            .mount(&server)
+            .await;
+
+        let client = client_for(&server);
+        let signer = NodeSigner::new(&client, "pw");
+
+        let receipt = signer.pay("recipient-address", 1000).await.unwrap();
+
+        assert_eq!(receipt.tx_hash, "g..");
+        assert_eq!(receipt.to_address, "recipient-address");
+        assert_eq!(receipt.amount, 1000);
     }
 }

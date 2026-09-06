@@ -55,6 +55,13 @@ pub struct DebugData {
     pub node_peers: Vec<String>,
 }
 
+#[derive(Debug, Clone, Deserialize)]
+pub struct PaymentAccepted {
+    pub to_address: String,
+    pub tx_hash: Option<String>,
+    pub amount: serde_json::Value,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
