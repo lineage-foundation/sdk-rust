@@ -265,6 +265,19 @@ impl Client {
         self.post_json(&base, "/v1/wallet/running-total:refresh", &body).await
     }
 
+    /// Fetches the given node's outgoing (pending) transactions.
+    pub async fn outgoing_transactions(&self, base: NodeClass) -> Result<serde_json::Value> {
+        let base = self.base_for(base);
+        self.get_json(&base, "/v1/transactions/outgoing", &[]).await
+    }
+
+    /// Requests a testnet donation to the given address from the miner.
+    pub async fn request_donation(&self, address: &str) -> Result<()> {
+        let base = self.base_for(NodeClass::Miner);
+        let body = serde_json::json!({ "address": address });
+        self.post_empty(&base, "/v1/donation-requests", &body).await
+    }
+
     /// Submits signed transactions to the mempool for inclusion.
     pub async fn submit_transactions(&self, txs: &[serde_json::Value]) -> Result<serde_json::Value> {
         let base = self.base_for(NodeClass::Mempool);
@@ -562,6 +575,31 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(r["running_total"], 42);
+    }
+
+    #[tokio::test]
+    async fn outgoing_transactions_gets_path() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/v1/transactions/outgoing"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({"transactions": []})))
+            .mount(&server)
+            .await;
+        let client = client_for(&server);
+        let r = client.outgoing_transactions(NodeClass::Miner).await.unwrap();
+        assert!(r["transactions"].is_array());
+    }
+
+    #[tokio::test]
+    async fn request_donation_posts_and_returns_unit_on_202() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/donation-requests"))
+            .respond_with(ResponseTemplate::new(202))
+            .mount(&server)
+            .await;
+        let client = client_for(&server);
+        client.request_donation("addr1").await.unwrap();
     }
 
     #[tokio::test]
