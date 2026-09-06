@@ -22,6 +22,8 @@ pub enum Error {
     Api(ApiProblem),
     #[error("decode error: {0}")]
     Decode(#[from] serde_json::Error),
+    #[error("keystore: {0}")]
+    Keystore(String),
 }
 
 pub type Result<T> = std::result::Result<T, Error>;
