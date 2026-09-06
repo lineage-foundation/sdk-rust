@@ -96,6 +96,41 @@ impl Client {
             Err(Error::Api(problem))
         }
     }
+    async fn send_empty(
+        &self,
+        method: reqwest::Method,
+        base: &str,
+        path: &str,
+        body: &serde_json::Value,
+    ) -> Result<()> {
+        let url = format!("{base}{path}");
+        let mut req = self.http.request(method, url).json(body);
+        if let Some(key) = &self.api_key {
+            req = req.header("x-api-key", key);
+        }
+        let resp = req.send().await?;
+        let status = resp.status();
+        if status.is_success() {
+            Ok(())
+        } else {
+            let bytes = resp.bytes().await?;
+            let problem: ApiProblem = serde_json::from_slice(&bytes).unwrap_or(ApiProblem {
+                status: status.as_u16(),
+                title: None,
+                detail: Some(String::from_utf8_lossy(&bytes).into_owned()),
+                request_id: None,
+            });
+            Err(Error::Api(problem))
+        }
+    }
+
+    pub(crate) async fn put_empty(&self, base: &str, path: &str, body: &serde_json::Value) -> Result<()> {
+        self.send_empty(reqwest::Method::PUT, base, path, body).await
+    }
+
+    pub(crate) async fn post_empty(&self, base: &str, path: &str, body: &serde_json::Value) -> Result<()> {
+        self.send_empty(reqwest::Method::POST, base, path, body).await
+    }
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -191,6 +226,43 @@ impl Client {
     pub async fn deserialize_transactions(&self, hexes: serde_json::Value) -> Result<serde_json::Value> {
         let base = self.base_for(NodeClass::Miner);
         self.post_json(&base, "/v1/transactions:deserialize", &hexes).await
+    }
+
+    /// Fetches wallet status (running total, etc.) from the given node.
+    pub async fn wallet_info(&self, base: NodeClass) -> Result<serde_json::Value> {
+        let base = self.base_for(base);
+        self.get_json(&base, "/v1/wallet", &[]).await
+    }
+
+    /// Generates a new wallet address on the given node.
+    pub async fn new_wallet_address(&self, base: NodeClass) -> Result<serde_json::Value> {
+        let base = self.base_for(base);
+        self.post_json(&base, "/v1/wallet/addresses", &serde_json::json!({})).await
+    }
+
+    /// Fetches the given node's stored keypairs.
+    pub async fn get_keypairs(&self, base: NodeClass) -> Result<serde_json::Value> {
+        let base = self.base_for(base);
+        self.get_json(&base, "/v1/wallet/keypairs", &[]).await
+    }
+
+    /// Imports keypairs into the given node's wallet.
+    pub async fn import_keypairs(&self, base: NodeClass, body: serde_json::Value) -> Result<serde_json::Value> {
+        let base = self.base_for(base);
+        self.post_json(&base, "/v1/wallet/keypairs", &body).await
+    }
+
+    /// Changes the given node's wallet passphrase.
+    pub async fn change_passphrase(&self, base: NodeClass, old: &str, new: &str) -> Result<()> {
+        let base = self.base_for(base);
+        let body = serde_json::json!({ "old_passphrase": old, "new_passphrase": new });
+        self.put_empty(&base, "/v1/wallet/passphrase", &body).await
+    }
+
+    /// Refreshes the given node's wallet running total.
+    pub async fn refresh_running_total(&self, base: NodeClass, body: serde_json::Value) -> Result<serde_json::Value> {
+        let base = self.base_for(base);
+        self.post_json(&base, "/v1/wallet/running-total:refresh", &body).await
     }
 
     /// Submits signed transactions to the mempool for inclusion.
@@ -407,6 +479,89 @@ mod tests {
             .await
             .unwrap();
         assert!(r["transactions"].is_array());
+    }
+
+    #[tokio::test]
+    async fn wallet_info_gets_wallet() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/v1/wallet"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({"running_total": 0})))
+            .mount(&server)
+            .await;
+        let client = client_for(&server);
+        let r = client.wallet_info(NodeClass::Miner).await.unwrap();
+        assert_eq!(r["running_total"], 0);
+    }
+
+    #[tokio::test]
+    async fn new_wallet_address_posts_empty_body() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/wallet/addresses"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({"address": "addr1"})))
+            .mount(&server)
+            .await;
+        let client = client_for(&server);
+        let r = client.new_wallet_address(NodeClass::Miner).await.unwrap();
+        assert_eq!(r["address"], "addr1");
+    }
+
+    #[tokio::test]
+    async fn get_keypairs_gets_wallet_keypairs() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/v1/wallet/keypairs"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({"keypairs": []})))
+            .mount(&server)
+            .await;
+        let client = client_for(&server);
+        let r = client.get_keypairs(NodeClass::Miner).await.unwrap();
+        assert!(r["keypairs"].is_array());
+    }
+
+    #[tokio::test]
+    async fn import_keypairs_posts_wallet_keypairs() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/wallet/keypairs"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({"imported": 1})))
+            .mount(&server)
+            .await;
+        let client = client_for(&server);
+        let r = client
+            .import_keypairs(NodeClass::Miner, serde_json::json!({"keypairs": []}))
+            .await
+            .unwrap();
+        assert_eq!(r["imported"], 1);
+    }
+
+    #[tokio::test]
+    async fn change_passphrase_puts_and_returns_unit_on_204() {
+        let server = MockServer::start().await;
+        Mock::given(method("PUT"))
+            .and(path("/v1/wallet/passphrase"))
+            .respond_with(ResponseTemplate::new(204))
+            .mount(&server)
+            .await;
+        let client = client_for(&server);
+        client.change_passphrase(NodeClass::Miner, "old", "new").await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn refresh_running_total_posts_body() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/wallet/running-total:refresh"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({"running_total": 42})))
+            .mount(&server)
+            .await;
+        let client = client_for(&server);
+        let r = client
+            .refresh_running_total(NodeClass::Miner, serde_json::json!({"addresses": []}))
+            .await
+            .unwrap();
+        assert_eq!(r["running_total"], 42);
     }
 
     #[tokio::test]
