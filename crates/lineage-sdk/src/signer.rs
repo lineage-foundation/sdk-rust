@@ -13,6 +13,19 @@ pub struct Receipt {
     pub amount: u64,
 }
 
+/// A payment that has been built and signed but not yet submitted, for
+/// inspection or a dry run.
+#[derive(Debug, Clone)]
+pub struct PreparedPayment {
+    pub tx_hash: String,
+    pub to_address: String,
+    pub amount: u64,
+    pub change: u64,
+    pub inputs: usize,
+    /// The `/v1/transactions` payload that [`LocalSigner::pay`] would submit.
+    pub transaction: serde_json::Value,
+}
+
 /// A backend capable of paying an address from wallet-held funds.
 ///
 /// The `pay` future is not `Send`-bounded; the SDK is used from a single async
@@ -38,17 +51,15 @@ impl<'a> LocalSigner<'a> {
             change_address: change_address.into(),
         }
     }
-}
 
-impl<'a> Signer for LocalSigner<'a> {
-    async fn pay(&self, to: &str, amount: u64) -> Result<Receipt> {
+    /// Select inputs, build, and sign a payment without submitting it.
+    pub async fn prepare(&self, to: &str, amount: u64) -> Result<PreparedPayment> {
         let addresses = self.wallet.addresses();
         let address_refs: Vec<&str> = addresses.iter().map(String::as_str).collect();
         let balances = self.client.balances(&address_refs).await?;
 
         let mut selected = Vec::new();
         let mut total: u64 = 0;
-
         'outer: for (address, utxos) in &balances.balance.address_list {
             let Some((public_key, secret_key)) = self.wallet.key_for(address) else {
                 continue;
@@ -87,13 +98,28 @@ impl<'a> Signer for LocalSigner<'a> {
         }
 
         let (tx_hash, tx) = build_signed_payment(&selected, &outputs);
-        let dto = serde_json::to_value(&tx)?;
-        self.client.submit_transactions(&[dto]).await?;
-
-        Ok(Receipt {
+        let transaction = serde_json::to_value(&tx)?;
+        Ok(PreparedPayment {
             tx_hash,
             to_address: to.to_string(),
             amount,
+            change,
+            inputs: selected.len(),
+            transaction,
+        })
+    }
+}
+
+impl<'a> Signer for LocalSigner<'a> {
+    async fn pay(&self, to: &str, amount: u64) -> Result<Receipt> {
+        let prepared = self.prepare(to, amount).await?;
+        self.client
+            .submit_transactions(&[prepared.transaction])
+            .await?;
+        Ok(Receipt {
+            tx_hash: prepared.tx_hash,
+            to_address: prepared.to_address,
+            amount: prepared.amount,
         })
     }
 }
@@ -185,6 +211,47 @@ mod tests {
         assert_eq!(receipt.to_address, "recipient-address");
         assert_eq!(receipt.amount, 1000);
         assert!(!receipt.tx_hash.is_empty());
+    }
+
+    #[tokio::test]
+    async fn prepare_builds_without_submitting() {
+        let dir = tempfile::tempdir().unwrap();
+        let path_buf = dir.path().join("w.json");
+        let mut wallet = Wallet::create(&path_buf, "pw").unwrap();
+        let address = wallet.new_address().unwrap();
+
+        let mut address_list = serde_json::Map::new();
+        address_list.insert(
+            address.clone(),
+            serde_json::json!([
+                {"out_point": {"n": 0, "t_hash": "g0000"}, "value": {"Token": 2000}}
+            ]),
+        );
+        let balances_body = serde_json::json!({
+            "balance": { "address_list": address_list, "total": {"tokens": 2000, "items": {}} }
+        });
+
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/v1/balances"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(balances_body))
+            .mount(&server)
+            .await;
+        // Deliberately no /v1/transactions mock: prepare must not submit.
+
+        let client = client_for(&server);
+        let signer = LocalSigner::new(&client, &wallet, "change-address");
+        let prepared = signer.prepare("recipient-address", 1000).await.unwrap();
+
+        assert_eq!(prepared.to_address, "recipient-address");
+        assert_eq!(prepared.amount, 1000);
+        assert_eq!(prepared.change, 1000);
+        assert_eq!(prepared.inputs, 1);
+        assert!(!prepared.tx_hash.is_empty());
+        assert!(prepared.transaction.get("inputs").is_some());
+
+        let reqs = server.received_requests().await.unwrap();
+        assert!(reqs.iter().all(|r| r.url.path() != "/v1/transactions"));
     }
 
     #[tokio::test]
