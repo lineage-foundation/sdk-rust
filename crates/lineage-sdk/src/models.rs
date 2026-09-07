@@ -3,59 +3,59 @@
 
 use std::collections::BTreeMap;
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Supply {
     pub total: u64,
     pub issued: u64,
 }
 
-#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct OutPointRef {
     pub n: u32,
     pub t_hash: String,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Utxo {
     pub out_point: OutPointRef,
     pub value: serde_json::Value,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BalanceTotals {
     pub tokens: u64,
     #[serde(default)]
     pub items: serde_json::Value,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Balances {
     pub address_list: BTreeMap<String, Vec<Utxo>>,
     pub total: BalanceTotals,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BalancesResponse {
     pub balance: Balances,
 }
 
-#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct TxStatus {
     pub status: String,
     pub timestamp: i64,
     pub additional_info: String,
 }
 
-#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct DebugData {
     pub node_type: String,
     pub node_api: Vec<String>,
     pub node_peers: Vec<String>,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PaymentAccepted {
     pub to_address: String,
     pub tx_hash: Option<String>,
@@ -71,6 +71,13 @@ mod tests {
         let s: Supply = serde_json::from_str(r#"{"total":360360000000000000,"issued":90103919694881008}"#).unwrap();
         assert_eq!(s.total, 360_360_000_000_000_000);
         assert_eq!(s.issued, 90_103_919_694_881_008);
+    }
+
+    #[test]
+    fn supply_serializes_back_to_json() {
+        let s = Supply { total: 360_360_000_000_000_000, issued: 42 };
+        let v = serde_json::to_value(&s).unwrap();
+        assert_eq!(v, serde_json::json!({"total": 360_360_000_000_000_000u64, "issued": 42}));
     }
 
     #[test]

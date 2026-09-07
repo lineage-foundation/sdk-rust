@@ -14,7 +14,7 @@ pub mod wallet;
 pub use amount::{Tokens, RAW_PER_LNGX};
 pub use client::{Client, Hosts, NodeClass};
 pub use error::{ApiProblem, Error, Result};
-pub use signer::{LocalSigner, NodeSigner, Receipt, Signer};
+pub use signer::{LocalSigner, NodeSigner, PreparedPayment, Receipt, Signer};
 pub use tx::{build_signed_payment, PayOutput, SpendInput};
 pub use wallet::{Wallet, ADDRESS_VERSION};
 
