@@ -6,7 +6,9 @@ use std::path::Path;
 use tw_chain::crypto::sign_ed25519 as sign;
 use tw_chain::utils::transaction_utils::construct_address_for;
 
-use crate::error::Result;
+use crate::druid::CreateTransaction;
+use crate::error::{Error, Result};
+use crate::models::EncryptedTransaction;
 use crate::wallet::keystore::{KeyStore, StoredKeypair};
 use crate::wallet::ADDRESS_VERSION;
 
@@ -70,6 +72,25 @@ impl Wallet {
         let sk = sign::SecretKey::from_slice(&sk_bytes)?;
 
         Some((pk, sk))
+    }
+
+    /// Seals `tx` under this wallet's own keystore master key, so it can be
+    /// safely persisted by the caller (as part of a
+    /// [`crate::models::PendingHalf`]) until a two-way trade settles.
+    pub fn encrypt_transaction(&self, tx: &CreateTransaction) -> Result<EncryptedTransaction> {
+        let plain = serde_json::to_vec(tx).map_err(|e| Error::Keystore(e.to_string()))?;
+        let blob = self.store.encrypt(&plain);
+        Ok(EncryptedTransaction {
+            druid: tx.druid_info.druid.clone(),
+            blob: hex::encode(blob),
+        })
+    }
+
+    /// Opens a transaction half sealed by [`Wallet::encrypt_transaction`].
+    pub fn decrypt_transaction(&self, enc: &EncryptedTransaction) -> Result<CreateTransaction> {
+        let blob = hex::decode(&enc.blob).map_err(|e| Error::Keystore(e.to_string()))?;
+        let plain = self.store.decrypt(&blob)?;
+        serde_json::from_slice(&plain).map_err(|e| Error::Keystore(e.to_string()))
     }
 }
 
