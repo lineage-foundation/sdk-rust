@@ -10,10 +10,15 @@ description = "Rust SDK for the Lineage network /v1 API"
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
 serde = { version = "1", features = ["derive"] }
-serde_json = "1"
+# preserve_order: keep JSON object key order through serde_json::Value, so
+# balance address_list order (load-bearing for two-way input selection) and
+# struct field order survive a round trip through Value.
+serde_json = { version = "1", features = ["preserve_order"] }
 thiserror = "1"
 tw_chain = "1.1.3"
 hex = "0.4"
+indexmap = { version = "2", features = ["serde"] }
+uuid = { version = "1", features = ["v4"] }
 
 [dev-dependencies]
 wiremock = "0.6"

@@ -5,6 +5,7 @@
 
 pub mod amount;
 pub mod client;
+pub mod druid;
 pub mod error;
 pub mod models;
 pub mod signer;
@@ -13,7 +14,12 @@ pub mod wallet;
 
 pub use amount::{Tokens, RAW_PER_LNGX};
 pub use client::{Client, Hosts, NodeClass};
+pub use druid::{
+    construct_tx_ins_address, create_2w_tx_half, generate_druid, BalanceTotals, BalanceUtxo,
+    CreateTransaction, CreateTxIn, CreateTxInScript, FetchBalanceResponse, KeyPairs,
+};
 pub use error::{ApiProblem, Error, Result};
+pub use models::{DruidExpectation, DruidInfo};
 pub use signer::{LocalSigner, NodeSigner, PreparedPayment, Receipt, Signer};
 pub use tx::{build_signed_payment, PayOutput, SpendInput};
 pub use wallet::{Wallet, ADDRESS_VERSION};

@@ -4,6 +4,7 @@
 use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
+use tw_chain::primitives::asset::Asset;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Supply {
@@ -60,6 +61,30 @@ pub struct PaymentAccepted {
     pub to_address: String,
     pub tx_hash: Option<String>,
     pub amount: serde_json::Value,
+}
+
+/// One party's expectation within a two-way (DRUID) trade: the asset owed,
+/// who owes it, and to whom.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct DruidExpectation {
+    pub from: String,
+    pub to: String,
+    pub asset: Asset,
+}
+
+/// The DDE metadata attached to one half of a two-way trade. Unsigned:
+/// never folded into any signable preimage.
+///
+/// `genesis_hash` is omitted at construction time (`create_2w_tx_half`
+/// leaves it `None`, and it's skipped from the serialized JSON entirely);
+/// the node fills it in at submission time.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct DruidInfo {
+    pub druid: String,
+    pub participants: usize,
+    pub expectations: Vec<DruidExpectation>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub genesis_hash: Option<String>,
 }
 
 #[cfg(test)]
