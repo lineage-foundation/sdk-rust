@@ -2,6 +2,8 @@
 
 use std::collections::{HashMap, HashSet};
 
+use tw_chain::crypto::sha3_256;
+use tw_chain::crypto::sign_ed25519 as sign;
 use tw_chain::primitives::asset::Asset;
 
 use crate::client::Client;
@@ -144,6 +146,40 @@ impl<'a> LocalSigner<'a> {
             inputs: selected.len(),
             transaction,
         })
+    }
+
+    /// Mints `amount` of a new item asset against `address`: signs the
+    /// item-asset signable hash -- `hex(sha3_256("Item:{amount}"))`, itself
+    /// signed as its UTF-8 hex text, exactly as per-input payment signatures
+    /// are (see [`crate::druid::create_2w_tx_half`]) -- with `address`'s
+    /// keypair, and submits `POST /v1/items`. `default_genesis_hash` selects
+    /// the node's well-known default item DRS transaction hash rather than
+    /// having one freshly assigned. Mirrors sdk-go's `Wallet.CreateItems`.
+    pub async fn create_items(
+        &self,
+        address: &str,
+        default_genesis_hash: bool,
+        amount: u64,
+        metadata: Option<String>,
+    ) -> Result<serde_json::Value> {
+        let (public_key, secret_key) = self
+            .wallet
+            .key_for(address)
+            .ok_or_else(|| Error::Tx(format!("no keypair for address {address}")))?;
+
+        let signable_hash = hex::encode(sha3_256::digest(format!("Item:{amount}").as_bytes()));
+        let signature = sign::sign_detached(signable_hash.as_bytes(), &secret_key);
+
+        let body = serde_json::json!({
+            "item_amount": amount,
+            "script_public_key": address,
+            "public_key": hex::encode(public_key.as_ref()),
+            "signature": hex::encode(signature.as_ref()),
+            "genesis_hash_spec": if default_genesis_hash { "Default" } else { "Create" },
+            "metadata": metadata,
+        });
+
+        self.client.post_items(body).await
     }
 
     /* ---------------------------------------------------------------- */
