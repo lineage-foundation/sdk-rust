@@ -325,3 +325,36 @@ pub fn construct_tx_ins_address(inputs: &[CreateTxIn]) -> Result<String> {
 
     Ok(tw_construct_tx_ins_address(&tx_ins))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn to_submission_value_includes_version_and_null_fields() {
+        let tx = CreateTransaction {
+            inputs: vec![],
+            outputs: vec![],
+            druid_info: DruidInfo {
+                druid: "DRUID0xtest000000000000000000000".to_string(),
+                participants: 2,
+                expectations: vec![],
+                genesis_hash: None,
+            },
+        };
+
+        let submitted = tx.to_submission_value().expect("serialization succeeds");
+
+        assert_eq!(submitted["version"], 2, "version must be 2");
+        assert_eq!(
+            submitted["fees"],
+            serde_json::Value::Null,
+            "fees must be null"
+        );
+        assert_eq!(
+            submitted["druid_info"]["genesis_hash"],
+            serde_json::Value::Null,
+            "druid_info.genesis_hash must be null"
+        );
+    }
+}

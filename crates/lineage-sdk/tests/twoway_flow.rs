@@ -260,6 +260,7 @@ async fn fetch_pending_settles_accepted_stored_half() {
         .collect();
     assert_eq!(submit_reqs.len(), 1);
     let body: serde_json::Value = serde_json::from_slice(&submit_reqs[0].body).unwrap();
+    assert_eq!(body["transactions"][0]["version"], 2);
     assert_eq!(body["transactions"][0]["fees"], serde_json::Value::Null);
     assert_eq!(
         body["transactions"][0]["druid_info"]["genesis_hash"],
@@ -335,6 +336,7 @@ async fn accept_submits_to_details_mempool_host_with_null_fees_and_genesis_hash(
     let submit_reqs = remote_mempool.received_requests().await.unwrap();
     assert_eq!(submit_reqs.len(), 1);
     let body: serde_json::Value = serde_json::from_slice(&submit_reqs[0].body).unwrap();
+    assert_eq!(body["transactions"][0]["version"], 2);
     assert_eq!(body["transactions"][0]["fees"], serde_json::Value::Null);
     assert_eq!(
         body["transactions"][0]["druid_info"]["genesis_hash"],
