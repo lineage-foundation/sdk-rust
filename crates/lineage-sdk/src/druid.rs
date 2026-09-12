@@ -80,6 +80,12 @@ pub struct CreateTxIn {
     pub script_signature: CreateTxInScript,
 }
 
+/// The transaction format version sent in `/v1/transactions` bodies (matches
+/// sdk-js/sdk-go/sdk-php). Added at submission time (see
+/// [`CreateTransaction::to_submission_value`]); not part of the constructed
+/// half or the signable preimage.
+const TRANSACTION_VERSION: u64 = 2;
+
 /// A constructed, per-input-signed transaction ready for submission to
 /// `/v1/transactions`, carrying unsigned DDE trade metadata.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -101,6 +107,11 @@ impl CreateTransaction {
     /// spreads.
     pub fn to_submission_value(&self) -> Result<serde_json::Value> {
         let mut value = serde_json::to_value(self)?;
+        // The transaction format version. Not part of the signable preimage and
+        // absent from the constructed half (sdk-js `create2WTxHalf` omits it),
+        // but the node requires it present at submission time. Matches the
+        // `version: 2` that sdk-js/sdk-go/sdk-php send for `/v1/transactions`.
+        value["version"] = serde_json::Value::from(TRANSACTION_VERSION);
         value["fees"] = serde_json::Value::Null;
         if let Some(druid_info) = value.get_mut("druid_info") {
             druid_info["genesis_hash"] = serde_json::Value::Null;
