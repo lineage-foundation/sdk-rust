@@ -10,6 +10,7 @@ pub mod error;
 pub mod models;
 pub mod signer;
 pub mod tx;
+pub mod valence;
 pub mod wallet;
 
 pub use amount::{Tokens, RAW_PER_LNGX};
@@ -19,9 +20,13 @@ pub use druid::{
     CreateTransaction, CreateTxIn, CreateTxInScript, FetchBalanceResponse, KeyPairs,
 };
 pub use error::{ApiProblem, Error, Result};
-pub use models::{DruidExpectation, DruidInfo};
+pub use models::{
+    DruidExpectation, DruidInfo, EncryptedTransaction, Pending2WTxDetails, Pending2WTxStatus,
+    PendingHalf,
+};
 pub use signer::{LocalSigner, NodeSigner, PreparedPayment, Receipt, Signer};
 pub use tx::{build_signed_payment, PayOutput, SpendInput};
+pub use valence::ValenceClient;
 pub use wallet::{Wallet, ADDRESS_VERSION};
 
 #[cfg(test)]

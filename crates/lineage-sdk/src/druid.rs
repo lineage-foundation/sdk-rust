@@ -89,6 +89,26 @@ pub struct CreateTransaction {
     pub druid_info: DruidInfo,
 }
 
+impl CreateTransaction {
+    /// The `/v1/transactions` submission wire shape for this half: an
+    /// explicit `fees: null` and `druid_info.genesis_hash: null` are added.
+    /// Neither is part of the transaction's signed preimage -- `fees` isn't
+    /// present on [`CreateTransaction`] at all, and `genesis_hash` is
+    /// intentionally omitted by [`create_2w_tx_half`] -- but the node
+    /// requires both present, explicitly null, at submission time. Matches
+    /// sdk-go's `druidInfoForSubmission` / `createTxSubmission` and sdk-js's
+    /// `{ ...tx, fees: null }` / `{ ...tx.druid_info, genesis_hash: null }`
+    /// spreads.
+    pub fn to_submission_value(&self) -> Result<serde_json::Value> {
+        let mut value = serde_json::to_value(self)?;
+        value["fees"] = serde_json::Value::Null;
+        if let Some(druid_info) = value.get_mut("druid_info") {
+            druid_info["genesis_hash"] = serde_json::Value::Null;
+        }
+        Ok(value)
+    }
+}
+
 /// Generates a fresh DRUID (DDE receipt unique identifier) used to correlate
 /// the two halves of a two-way trade: `"DRUID0x"` followed by the first 32
 /// hex characters of `hex(sha3_256(uuid))`, where `uuid` is a random UUIDv4

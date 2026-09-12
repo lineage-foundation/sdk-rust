@@ -87,6 +87,63 @@ pub struct DruidInfo {
     pub genesis_hash: Option<String>,
 }
 
+/// Lifecycle status of a two-way (DRUID) trade as tracked on the valence
+/// mailbox, mirroring sdk-go's `Pending2WTxStatus` / sdk-js's
+/// `IPending2WTxDetails['status']`.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum Pending2WTxStatus {
+    /// An offer awaiting the counterparty's response.
+    Pending,
+    /// An offer the counterparty has accepted.
+    Accepted,
+    /// An offer the counterparty has rejected.
+    Rejected,
+}
+
+/// The payload stored under a valence mailbox entry for a two-way (DRUID)
+/// trade: both parties' expectations, the trade's current status, and the
+/// mempool host the initiating sender chose (so both parties submit their
+/// halves to the same node's DRUID pool). Exchanged with valence in
+/// PLAINTEXT -- never encrypted on the wire. Field names are camelCase to
+/// match sdk-go/sdk-js/sdk-php's wire shape byte-for-byte (see
+/// `tests/fixtures/twoway.json`'s `pending2WTxDetailsOffer`).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct Pending2WTxDetails {
+    pub druid: String,
+    #[serde(rename = "senderExpectation")]
+    pub sender_expectation: DruidExpectation,
+    #[serde(rename = "receiverExpectation")]
+    pub receiver_expectation: DruidExpectation,
+    pub status: Pending2WTxStatus,
+    #[serde(rename = "mempoolHost")]
+    pub mempool_host: String,
+}
+
+/// A passphrase-encrypted [`crate::druid::CreateTransaction`] half, sealed
+/// under the wallet's own keystore master key by
+/// [`crate::wallet::Wallet::encrypt_transaction`]. Never sent to valence --
+/// this is purely the caller-persisted at-rest form.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct EncryptedTransaction {
+    pub druid: String,
+    /// Hex-encoded `nonce || ciphertext` blob (see [`crate::wallet::crypto`]).
+    pub blob: String,
+}
+
+/// The caller-persisted record of a two-way payment this wallet initiated
+/// via `make_2way_payment`: the DRUID correlating the trade, this party's
+/// half sealed at rest, and both parties' expectations exactly as posted to
+/// valence (so a later `fetch_pending_2way_payment` call can match its own
+/// stored half back up against the mailbox contents).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct PendingHalf {
+    pub druid: String,
+    pub encrypted_half: EncryptedTransaction,
+    pub sender_expectation: DruidExpectation,
+    pub receiver_expectation: DruidExpectation,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -26,6 +26,13 @@ pub enum Error {
     Keystore(String),
     #[error("tx: {0}")]
     Tx(String),
+    /// Several independent failures joined into one, e.g. from
+    /// `fetch_pending_2way_payment` polling several mailboxes: one
+    /// unreachable mailbox must not discard the results already gathered
+    /// from the others, so every error encountered is collected here rather
+    /// than short-circuiting. Mirrors sdk-go's `errors.Join`.
+    #[error("multiple errors: {}", .0.iter().map(ToString::to_string).collect::<Vec<_>>().join("; "))]
+    Multiple(Vec<Error>),
 }
 
 pub type Result<T> = std::result::Result<T, Error>;
