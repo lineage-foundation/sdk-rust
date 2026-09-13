@@ -1,0 +1,31 @@
+name: Release (crates.io)
+
+# Publishes the `lineage-sdk` crate to crates.io whenever a `v*` tag is
+# pushed (e.g. `v0.1.0`).
+#
+# Requirements before this can succeed:
+#   - A repo secret named `CARGO_REGISTRY_TOKEN` holding a crates.io API
+#     token with publish rights for this crate.
+#   - The crate name `lineage-sdk` must be available on crates.io, or the
+#     token's account must already be an owner of it.
+
+on:
+  push:
+    tags:
+      - "v*"
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  publish:
+    name: cargo publish
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install stable toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: cargo publish
+        run: cargo publish -p lineage-sdk --locked --token ${{ secrets.CARGO_REGISTRY_TOKEN }}
