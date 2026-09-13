@@ -110,6 +110,20 @@ impl KeyStore {
         &self.entries
     }
 
+    /// Encrypts `plain` under the keystore's master key (`nonce ||
+    /// ciphertext`, raw bytes). Used to seal caller-opaque blobs (e.g.
+    /// two-way payment transaction halves) at rest, independently of the
+    /// per-entry keypair encryption this keystore already does for its own
+    /// [`StoredKeypair`] entries.
+    pub(crate) fn encrypt(&self, plain: &[u8]) -> Vec<u8> {
+        encrypt(plain, &self.master)
+    }
+
+    /// Decrypts a blob produced by [`KeyStore::encrypt`].
+    pub(crate) fn decrypt(&self, blob: &[u8]) -> Result<Vec<u8>> {
+        decrypt(blob, &self.master)
+    }
+
     /// Re-encrypt all entries with the master key and write the keystore file
     /// atomically.
     fn write(&self) -> Result<()> {

@@ -1,0 +1,271 @@
+{
+  "druid": "DRUID0xf1d2d2f924e986ac86fdf7b36c94bcdf",
+  "fixedKeypairs": {
+    "ours": [
+      {
+        "address": "cf0067d6c42463b2c1e4236e9669df546c74b16c0e2ef37114549b2944e05b7c",
+        "public_key": "5e6d463ec66d7999769fa4de56f690dfb62e685b97032f5926b0cb6c93ba83c6",
+        "secret_key": "787072763976443650373355356b444a7164326d344b64525335466f6654456e5e6d463ec66d7999769fa4de56f690dfb62e685b97032f5926b0cb6c93ba83c6",
+        "address_version": null
+      },
+      {
+        "address": "f226b92e6868e178f722e9cf71ad2a0c16d864c5d8fcadc70153bbd021f11ea0",
+        "public_key": "58272ba93c1e79df280d4c417de47dbf6a7e330ba52793d7baa8e00ae5c34e59",
+        "secret_key": "787072763976443650373355356b444a7346385875626f4e5667526a4472366358272ba93c1e79df280d4c417de47dbf6a7e330ba52793d7baa8e00ae5c34e59",
+        "address_version": null
+      },
+      {
+        "address": "9b28bf45e5e5285a8eb10003046f5ed48571903ea767915acf0fe77e257b43fa",
+        "public_key": "efa9dcba0f3282b3ed4a6aa1ccdb169d6685a30d7b2af7a2171a5682f3112359",
+        "secret_key": "787072763976443650373355356b444a7545555a35434479585a535038417558efa9dcba0f3282b3ed4a6aa1ccdb169d6685a30d7b2af7a2171a5682f3112359",
+        "address_version": null
+      }
+    ],
+    "counterparty": {
+      "address": "a07ffc5e1799c00f3ac9fa7bbf1db75a25aaf4d0ac1e104f3f16a5445cd9c571",
+      "public_key": "d04ab232742bb4ab3a1368bd4615e4e6d0224ab71a016baf8520a332c9778737",
+      "secret_key": "1111111111111111111111111111111111111111111111111111111111111111d04ab232742bb4ab3a1368bd4615e4e6d0224ab71a016baf8520a332c9778737",
+      "address_version": null
+    }
+  },
+  "create2WTxHalf": {
+    "input": {
+      "fetchBalanceResponse": {
+        "total": {
+          "tokens": 1060,
+          "items": {
+            "default_genesis_hash_spec": 3
+          }
+        },
+        "address_list": {
+          "cf0067d6c42463b2c1e4236e9669df546c74b16c0e2ef37114549b2944e05b7c": [
+            {
+              "out_point": {
+                "t_hash": "000000",
+                "n": 0
+              },
+              "value": {
+                "Token": 10
+              }
+            },
+            {
+              "out_point": {
+                "t_hash": "000000",
+                "n": 1
+              },
+              "value": {
+                "Item": {
+                  "amount": 3,
+                  "genesis_hash": "default_genesis_hash_spec",
+                  "metadata": "{'test': 'test'}"
+                }
+              }
+            }
+          ],
+          "f226b92e6868e178f722e9cf71ad2a0c16d864c5d8fcadc70153bbd021f11ea0": [
+            {
+              "out_point": {
+                "t_hash": "000001",
+                "n": 0
+              },
+              "value": {
+                "Token": 50
+              }
+            }
+          ],
+          "9b28bf45e5e5285a8eb10003046f5ed48571903ea767915acf0fe77e257b43fa": [
+            {
+              "out_point": {
+                "t_hash": "000002",
+                "n": 0
+              },
+              "value": {
+                "Token": 1000
+              }
+            }
+          ]
+        }
+      },
+      "senderExpectation": {
+        "from": "a07ffc5e1799c00f3ac9fa7bbf1db75a25aaf4d0ac1e104f3f16a5445cd9c571",
+        "to": "cf0067d6c42463b2c1e4236e9669df546c74b16c0e2ef37114549b2944e05b7c",
+        "asset": {
+          "Item": {
+            "amount": 1,
+            "genesis_hash": "default_genesis_hash_spec",
+            "metadata": "{'test': 'test'}"
+          }
+        }
+      },
+      "receiverExpectation": {
+        "from": "cf0067d6c42463b2c1e4236e9669df546c74b16c0e2ef37114549b2944e05b7c",
+        "to": "a07ffc5e1799c00f3ac9fa7bbf1db75a25aaf4d0ac1e104f3f16a5445cd9c571",
+        "asset": {
+          "Token": 1050
+        }
+      },
+      "excessAddress": "cf0067d6c42463b2c1e4236e9669df546c74b16c0e2ef37114549b2944e05b7c",
+      "locktime": 0
+    },
+    "output": {
+      "druid_info": {
+        "druid": "DRUID0xf1d2d2f924e986ac86fdf7b36c94bcdf",
+        "participants": 2,
+        "expectations": [
+          {
+            "from": "a07ffc5e1799c00f3ac9fa7bbf1db75a25aaf4d0ac1e104f3f16a5445cd9c571",
+            "to": "cf0067d6c42463b2c1e4236e9669df546c74b16c0e2ef37114549b2944e05b7c",
+            "asset": {
+              "Item": {
+                "amount": 1,
+                "genesis_hash": "default_genesis_hash_spec",
+                "metadata": "{'test': 'test'}"
+              }
+            }
+          }
+        ]
+      },
+      "outputs": [
+        {
+          "value": {
+            "Token": 1050
+          },
+          "locktime": 0,
+          "script_public_key": "a07ffc5e1799c00f3ac9fa7bbf1db75a25aaf4d0ac1e104f3f16a5445cd9c571"
+        },
+        {
+          "value": {
+            "Token": 10
+          },
+          "locktime": 0,
+          "script_public_key": "cf0067d6c42463b2c1e4236e9669df546c74b16c0e2ef37114549b2944e05b7c"
+        }
+      ],
+      "inputs": [
+        {
+          "previous_out": {
+            "t_hash": "000000",
+            "n": 0
+          },
+          "script_signature": {
+            "Pay2PkH": {
+              "signable_data": "219e1611d625b90f87357f3b2b13a4509609542cfcadd63bcfca64f8930aedd3",
+              "signature": "817038c3c3f458be16c294d5ff12d18b261a9f8597314131829396f0522de6621c8127a469cc2acd46e4cd11712cb266f3f98f18c299f32015f94173b9029307",
+              "public_key": "5e6d463ec66d7999769fa4de56f690dfb62e685b97032f5926b0cb6c93ba83c6",
+              "address_version": null
+            }
+          }
+        },
+        {
+          "previous_out": {
+            "t_hash": "000001",
+            "n": 0
+          },
+          "script_signature": {
+            "Pay2PkH": {
+              "signable_data": "2cb862d360158afe8fb949e6d56120519491db1b2f88666e462e8b67b852f18b",
+              "signature": "4ddda22b54da8587ba7b006380293e70272602bc4161acfe7a8c90dec0f8f93949c6897ddfcc7067560d4fd37aa5771f09e2fb86a5b9d40310e9f570f6692d0b",
+              "public_key": "58272ba93c1e79df280d4c417de47dbf6a7e330ba52793d7baa8e00ae5c34e59",
+              "address_version": null
+            }
+          }
+        },
+        {
+          "previous_out": {
+            "t_hash": "000002",
+            "n": 0
+          },
+          "script_signature": {
+            "Pay2PkH": {
+              "signable_data": "0b7be813dbf4c8d5679e1fbe71a86e106d07c83d5ea2637001eb71080a816c32",
+              "signature": "7262c7786aa01846cc957ccabb6647f5ed0145bd1c6628df8f9c216b5ce9f711609e0f8cc6b48978cc28ab63a9df8c48715975e2b8afe7259d2d8ce5ddb3990c",
+              "public_key": "efa9dcba0f3282b3ed4a6aa1ccdb169d6685a30d7b2af7a2171a5682f3112359",
+              "address_version": null
+            }
+          }
+        }
+      ],
+      "usedAddresses": [
+        "cf0067d6c42463b2c1e4236e9669df546c74b16c0e2ef37114549b2944e05b7c",
+        "f226b92e6868e178f722e9cf71ad2a0c16d864c5d8fcadc70153bbd021f11ea0",
+        "9b28bf45e5e5285a8eb10003046f5ed48571903ea767915acf0fe77e257b43fa"
+      ],
+      "excessAddressUsed": true
+    }
+  },
+  "constructTxInsAddress": {
+    "input": [
+      {
+        "previous_out": {
+          "t_hash": "000000",
+          "n": 0
+        },
+        "script_signature": {
+          "Pay2PkH": {
+            "signable_data": "219e1611d625b90f87357f3b2b13a4509609542cfcadd63bcfca64f8930aedd3",
+            "signature": "817038c3c3f458be16c294d5ff12d18b261a9f8597314131829396f0522de6621c8127a469cc2acd46e4cd11712cb266f3f98f18c299f32015f94173b9029307",
+            "public_key": "5e6d463ec66d7999769fa4de56f690dfb62e685b97032f5926b0cb6c93ba83c6",
+            "address_version": null
+          }
+        }
+      },
+      {
+        "previous_out": {
+          "t_hash": "000001",
+          "n": 0
+        },
+        "script_signature": {
+          "Pay2PkH": {
+            "signable_data": "2cb862d360158afe8fb949e6d56120519491db1b2f88666e462e8b67b852f18b",
+            "signature": "4ddda22b54da8587ba7b006380293e70272602bc4161acfe7a8c90dec0f8f93949c6897ddfcc7067560d4fd37aa5771f09e2fb86a5b9d40310e9f570f6692d0b",
+            "public_key": "58272ba93c1e79df280d4c417de47dbf6a7e330ba52793d7baa8e00ae5c34e59",
+            "address_version": null
+          }
+        }
+      },
+      {
+        "previous_out": {
+          "t_hash": "000002",
+          "n": 0
+        },
+        "script_signature": {
+          "Pay2PkH": {
+            "signable_data": "0b7be813dbf4c8d5679e1fbe71a86e106d07c83d5ea2637001eb71080a816c32",
+            "signature": "7262c7786aa01846cc957ccabb6647f5ed0145bd1c6628df8f9c216b5ce9f711609e0f8cc6b48978cc28ab63a9df8c48715975e2b8afe7259d2d8ce5ddb3990c",
+            "public_key": "efa9dcba0f3282b3ed4a6aa1ccdb169d6685a30d7b2af7a2171a5682f3112359",
+            "address_version": null
+          }
+        }
+      }
+    ],
+    "address": "46c9891332545354c5c5941bc77011a3fdbe4e57470baeadc725c9c5cc8e2717"
+  },
+  "valenceAuth": {
+    "address": "cf0067d6c42463b2c1e4236e9669df546c74b16c0e2ef37114549b2944e05b7c",
+    "public_key": "5e6d463ec66d7999769fa4de56f690dfb62e685b97032f5926b0cb6c93ba83c6",
+    "signature": "29e355da6bd2b8c992296a6c59ad4b18f2d78fc4aa5e2f5ad7af35adae9f39ea2d75102e82aee292d5fc46e638dfd8db22232fdf100105fdbcf9ab85f953e203"
+  },
+  "pending2WTxDetailsOffer": {
+    "druid": "DRUID0xf1d2d2f924e986ac86fdf7b36c94bcdf",
+    "senderExpectation": {
+      "from": "a07ffc5e1799c00f3ac9fa7bbf1db75a25aaf4d0ac1e104f3f16a5445cd9c571",
+      "to": "cf0067d6c42463b2c1e4236e9669df546c74b16c0e2ef37114549b2944e05b7c",
+      "asset": {
+        "Item": {
+          "amount": 1,
+          "genesis_hash": "default_genesis_hash_spec",
+          "metadata": "{'test': 'test'}"
+        }
+      }
+    },
+    "receiverExpectation": {
+      "from": "cf0067d6c42463b2c1e4236e9669df546c74b16c0e2ef37114549b2944e05b7c",
+      "to": "a07ffc5e1799c00f3ac9fa7bbf1db75a25aaf4d0ac1e104f3f16a5445cd9c571",
+      "asset": {
+        "Token": 1050
+      }
+    },
+    "status": "pending",
+    "mempoolHost": "https://mempool.lineage.to"
+  }
+}

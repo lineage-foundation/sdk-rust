@@ -4,6 +4,7 @@ use std::collections::BTreeMap;
 
 use serde::de::DeserializeOwned;
 
+use crate::druid::FetchBalanceResponse;
 use crate::error::{ApiProblem, Error, Result};
 use crate::models::{BalancesResponse, DebugData, PaymentAccepted, Supply, TxStatus};
 
@@ -160,6 +161,27 @@ impl Client {
         self.get_json(&base, "/v1/balances", &query).await
     }
 
+    /// Fetches balances for the given addresses with `address_list` decoded
+    /// in its original JSON key order (see [`FetchBalanceResponse`]) --
+    /// load-bearing for two-way trade input selection, which must walk
+    /// addresses in the same order sdk-go/sdk-js/sdk-php do.
+    pub async fn balances_ordered(&self, addresses: &[&str]) -> Result<FetchBalanceResponse> {
+        #[derive(serde::Deserialize)]
+        struct Envelope {
+            balance: FetchBalanceResponse,
+        }
+
+        let base = self.base_for(NodeClass::Mempool);
+        let query: Vec<(&str, String)> = addresses.iter().map(|a| ("address", a.to_string())).collect();
+        let envelope: Envelope = self.get_json(&base, "/v1/balances", &query).await?;
+        Ok(envelope.balance)
+    }
+
+    /// The base URL of this client's configured mempool host.
+    pub fn mempool_host(&self) -> &str {
+        &self.hosts.mempool
+    }
+
     pub async fn transaction_status(&self, tx_hash: &str) -> Result<BTreeMap<String, TxStatus>> {
         let base = self.base_for(NodeClass::Mempool);
         self.get_json(&base, "/v1/transactions/status", &[("tx_hash", tx_hash.to_string())]).await
@@ -281,8 +303,17 @@ impl Client {
     /// Submits signed transactions to the mempool for inclusion.
     pub async fn submit_transactions(&self, txs: &[serde_json::Value]) -> Result<serde_json::Value> {
         let base = self.base_for(NodeClass::Mempool);
+        self.submit_transactions_to(&base, txs).await
+    }
+
+    /// Submits signed transactions to an arbitrary mempool host's
+    /// `/v1/transactions`, rather than this client's own configured mempool.
+    /// Two-way trades name the mempool host to submit to as part of the
+    /// [`crate::models::Pending2WTxDetails`] both parties exchange over
+    /// valence, since it need not be this client's own.
+    pub async fn submit_transactions_to(&self, host: &str, txs: &[serde_json::Value]) -> Result<serde_json::Value> {
         let body = serde_json::json!({ "transactions": txs });
-        self.post_json(&base, "/v1/transactions", &body).await
+        self.post_json(host, "/v1/transactions", &body).await
     }
 
     /// Requests a node-signed payment from the miner's wallet.
