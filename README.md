@@ -1,5 +1,51 @@
-# sdk-rust
-Rust SDK for Lineage Foundation
+# Lineage Rust SDK
+
+Rust SDK for the Lineage `/v1` REST API: a keyless read client and a key-holding wallet that signs transactions locally.
+
+## Installation
+
+```bash
+cargo add lineage-sdk
+```
+
+## Configuration
+
+```rust
+let client = Client::new(Hosts {
+    mempool: "https://mempool.lineage.to".into(),
+    storage: "https://storage.lineage.to".into(),
+    miner: "https://miner.lineage.to".into(),
+})?
+.with_api_key("optional-key"); // only if your node requires x-api-key
+```
+
+## Quickstart
+
+```rust
+use std::path::Path;
+use lineage_sdk::{Client, Hosts, LocalSigner, Signer, Wallet};
+
+#[tokio::main]
+async fn main() -> lineage_sdk::Result<()> {
+    let client = Client::new(Hosts {
+        mempool: "https://mempool.lineage.to".into(),
+        storage: "https://storage.lineage.to".into(),
+        miner: "https://miner.lineage.to".into(),
+    })?;
+
+    let mut wallet = Wallet::create(Path::new("wallet.json"), "passphrase")?;
+    let address = wallet.new_address()?;
+
+    let balances = client.balances(&[&address]).await?;
+    println!("balance: {:?}", balances.balance.total);
+
+    let signer = LocalSigner::new(&client, &wallet, address.clone());
+    let receipt = signer.pay("recipient-address", 1_000).await?;
+    println!("paid {} tokens, tx {}", receipt.amount, receipt.tx_hash);
+
+    Ok(())
+}
+```
 
 ## Two-way (DRUID) payments
 
@@ -9,70 +55,37 @@ service used only to exchange trade offers/acceptances -- it never sees keys or 
 anything. Configure the valence host on a `LocalSigner` alongside its `Client`/`Wallet`:
 
 ```rust
-let client = Client::new(Hosts {
-    mempool: "https://mempool.lineage.to".into(),
-    storage: "https://storage.lineage.to".into(),
-    miner: "https://miner.lineage.to".into(),
-})?;
 let signer = LocalSigner::new(&client, &wallet, change_address)
     .with_valence_host("https://valence.lineage.to");
 ```
 
-Two-way payments are unusable until `with_valence_host` is set.
-
-The flow is four `LocalSigner` methods:
+Two-way payments are unusable until `with_valence_host` is set. The flow is four
+`LocalSigner` methods:
 
 ```rust
 // Party A offers sending_asset to payment_address in exchange for receiving_asset,
-// paid to receive_keypair's address. all_keypairs sources the inputs for A's own
-// half. Returns a PendingHalf -- persist it; fetch_pending_2way_payment needs it
-// later to recognize and settle the trade once accepted.
-pub async fn make_2way_payment(
-    &self,
-    payment_address: &str,
-    sending_asset: Asset,
-    receiving_asset: Asset,
-    all_keypairs: &[String],
-    receive_keypair: &str,
-) -> Result<PendingHalf>;
+// paid to receive_keypair's address. Returns a PendingHalf -- persist it;
+// fetch_pending_2way_payment needs it later to recognize and settle the trade.
+signer_a.make_2way_payment(payment_address, sending_asset, receiving_asset, all_keypairs, receive_keypair).await?;
 
-// Party B (or A, on a later poll) checks its mailboxes for offers matching
-// stored: any that the counterparty has accepted are settled (submitted to
-// this wallet's own mempool) and returned in settled; everything else still
-// outstanding is returned in pending, keyed by DRUID. A failure against one
-// mailbox never discards progress made against the others.
-pub async fn fetch_pending_2way_payment(
-    &self,
-    stored: &[PendingHalf],
-    all_keypairs: &[String],
-) -> (HashMap<String, Pending2WTxDetails>, Vec<String>, Option<Error>);
+// Party B (or A, on a later poll) checks its mailboxes: offers the counterparty
+// has accepted are settled and returned in `settled`; the rest, keyed by DRUID,
+// come back in `pending`.
+signer_b.fetch_pending_2way_payment(stored, all_keypairs).await;
 
-// Party B accepts a pending offer: pays details.sender_expectation's asset,
-// submits the transaction to details.mempool_host, and posts the acceptance
-// back to valence so A's next fetch_pending_2way_payment settles it.
-pub async fn accept_2way_payment(
-    &self,
-    details: Pending2WTxDetails,
-    all_keypairs: &[String],
-) -> Result<()>;
+// Party B accepts: pays sender_expectation's asset, submits the transaction, and
+// posts the acceptance back to valence so A's next fetch settles it.
+signer_b.accept_2way_payment(details, all_keypairs).await?;
 
-// Party B declines instead: no transaction is built, only the rejected
-// status is posted back to valence.
-pub async fn reject_2way_payment(
-    &self,
-    details: Pending2WTxDetails,
-    all_keypairs: &[String],
-) -> Result<()>;
+// Party B declines instead: no transaction is built, only the rejected status
+// is posted back to valence.
+signer_b.reject_2way_payment(details, all_keypairs).await?;
 ```
 
 A full round trip -- A offers an item for tokens, B accepts, A settles:
 
 ```rust
-let sending_asset = Asset::Item(ItemAsset {
-    amount: 50,
-    genesis_hash: Some("default_genesis_hash".into()),
-    metadata: None,
-});
+let sending_asset = Asset::Item(ItemAsset { amount: 50, genesis_hash: Some("default_genesis_hash".into()), metadata: None });
 let receiving_asset = Asset::Token(TokenAmount(100));
 
 let half = signer_a
@@ -81,55 +94,41 @@ let half = signer_a
 // persist half (keyed by half.druid) until it settles
 
 // ...on B's side, out of band:
-let (pending, _, error) = signer_b.fetch_pending_2way_payment(&[], &[b_address.clone()]).await;
+let (pending, _, _) = signer_b.fetch_pending_2way_payment(&[], &[b_address.clone()]).await;
 let offer = pending[&half.druid].clone();
 signer_b.accept_2way_payment(offer, &[b_address.clone()]).await?;
 
 // ...back on A's side, a later poll settles it:
-let (_, settled, error) = signer_a
-    .fetch_pending_2way_payment(&[half.clone()], &[a_address.clone()])
-    .await;
+let (_, settled, _) = signer_a.fetch_pending_2way_payment(&[half.clone()], &[a_address.clone()]).await;
 // settled now contains half.druid; A holds the tokens, B holds the item.
 ```
 
-`make_2way_payment` builds and seals this party's transaction half under the wallet's
-own keystore master key before it's ever handed back to the caller: `PendingHalf` is
-safe to persist as-is (e.g. to disk, or wherever the caller keeps outstanding trades)
-between the offer going out and `fetch_pending_2way_payment` reporting it settled. No
-per-call state is otherwise kept on `LocalSigner` or `Client` -- every method call is
-fully self-contained given a stored `PendingHalf` or a `Pending2WTxDetails` handed back
-from valence.
-
-This is wire- and protocol-compatible with sdk-js's, sdk-go's, and sdk-php's two-way
-payment support: any of the four SDKs can make the offer, accept it, or settle it, in
-any combination -- they all speak the same DRUID transaction shape and the same
-plaintext Valence mailbox format.
-
 See `crates/lineage-sdk/tests/twoway_flow.rs` for wiremock-backed coverage of all four
 methods, and `crates/lineage-sdk/tests/twoway_e2e.rs` for a complete two-wallet live
-example.
+example against the testnet.
 
-## Two-way payment live e2e
+## Wire compatibility
 
-`crates/lineage-sdk/tests/twoway_e2e.rs` drives a complete two-wallet atomic swap
-against the live Lineage testnet: it creates wallets A and B, funds both from the
-testnet miner's faucet, mints an item to A, has A offer that item to B in exchange for
-tokens, has B accept, has A settle, and polls both wallets' balances to confirm the
-swap landed atomically (A ends up with the tokens, B ends up with the item).
+Keys and signatures are byte-for-byte compatible across every Lineage SDK -- a wallet (mnemonic) created in one derives the same addresses and produces the same signatures in all of them. sdk-js is the reference implementation; BIP39/BIP32 derivation, SHA3-256 addresses, ed25519 signing, and the `/v1` transaction serialization (field order is load-bearing -- you sign exactly what you submit) all match it exactly.
 
-Because it funds real wallets and submits live transactions, it's `#[ignore]`d --
-`cargo test` never runs it -- and even under `--ignored` it skips itself unless
-`LINEAGE_E2E=1` is set:
-
-```bash
-LINEAGE_E2E=1 cargo test --test twoway_e2e -- --ignored --nocapture
-```
+Two-way trades interoperate across all the SDKs and settle atomically through the mempool's DRUID pool, so either party can be on any SDK.
 
 ## Testing
 
 ```bash
-cargo build
-cargo test                                            # unit + integration tests (fast, no network)
-LINEAGE_E2E=1 cargo test --test twoway_e2e -- --ignored --nocapture  # + two-way live e2e
-cargo clippy --all-targets -- -D warnings
+cargo test                                                            # unit + integration tests, no network
+LINEAGE_E2E=1 cargo test --test twoway_e2e -- --ignored --nocapture   # + two-way live e2e against testnet
 ```
+
+## Lineage SDKs
+
+- [JavaScript / TypeScript](https://github.com/lineage-foundation/sdk-js)
+- [Python](https://github.com/lineage-foundation/sdk-python)
+- [Go](https://github.com/lineage-foundation/sdk-go)
+- [Rust](https://github.com/lineage-foundation/sdk-rust)
+- [PHP](https://github.com/lineage-foundation/sdk-php)
+- [Laravel](https://github.com/lineage-foundation/sdk-laravel)
+
+## License
+
+MIT — see [LICENSE](LICENSE).
