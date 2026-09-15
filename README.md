@@ -4,6 +4,8 @@ Rust SDK for the Lineage `/v1` REST API: a keyless read client and a key-holding
 
 ## Installation
 
+Published on [crates.io](https://crates.io/crates/lineage-sdk) as `lineage-sdk`.
+
 ```bash
 cargo add lineage-sdk
 ```
