@@ -188,6 +188,73 @@ impl Client {
         Ok(envelope.balance)
     }
 
+    /// Fetches balances for `addresses` with `address_list` in original JSON
+    /// key order (as [`Self::balances_ordered`]) and, when `enrich` is true,
+    /// attaches each item's genesis `metadata` resolved from the storage node.
+    ///
+    /// Enrichment is best-effort: the DISTINCT item `genesis_hash`es are
+    /// resolved CONCURRENTLY against the storage node's
+    /// `GET /v1/items/{genesis_hash}`, cached per client instance, and written
+    /// onto each item's `metadata`. A resolver error, 404, or missing metadata
+    /// leaves that item's existing `metadata` untouched -- the balance call
+    /// itself never fails because of enrichment. Pass `enrich = false` to skip
+    /// enrichment entirely (zero resolver calls).
+    pub async fn fetch_balance(&self, addresses: &[&str], enrich: bool) -> Result<FetchBalanceResponse> {
+        let mut balance = self.balances_ordered(addresses).await?;
+        if enrich {
+            self.enrich_balance_items(&mut balance).await;
+        }
+        Ok(balance)
+    }
+
+    /// Attaches genesis `metadata` to every item UTXO in a balance (best-effort).
+    /// Resolves the distinct cache-miss `genesis_hash`es concurrently, then
+    /// writes each successfully resolved `metadata` onto its item. Items whose
+    /// hash did not resolve are left exactly as they were (no clobber).
+    async fn enrich_balance_items(&self, balance: &mut FetchBalanceResponse) {
+        // Collect the distinct item genesis hashes in first-seen order.
+        let mut seen = std::collections::HashSet::new();
+        let mut distinct: Vec<String> = Vec::new();
+        for utxos in balance.address_list.values() {
+            for utxo in utxos {
+                if let Asset::Item(item) = &utxo.value {
+                    if let Some(hash) = &item.genesis_hash {
+                        if seen.insert(hash.clone()) {
+                            distinct.push(hash.clone());
+                        }
+                    }
+                }
+            }
+        }
+        if distinct.is_empty() {
+            return;
+        }
+
+        // Only resolve hashes not already cached (dedup across repeat listings).
+        let misses: Vec<String> = {
+            let cache = self.item_info_cache.lock().expect("item info cache mutex poisoned");
+            distinct.into_iter().filter(|hash| !cache.contains_key(hash)).collect()
+        };
+        if !misses.is_empty() {
+            let resolves = misses.iter().map(|hash| self.resolve_item_info_best_effort(hash));
+            futures::future::join_all(resolves).await;
+        }
+
+        // Write back: only overwrite metadata for hashes that resolved (are cached).
+        let cache = self.item_info_cache.lock().expect("item info cache mutex poisoned");
+        for utxos in balance.address_list.values_mut() {
+            for utxo in utxos {
+                if let Asset::Item(item) = &mut utxo.value {
+                    if let Some(hash) = &item.genesis_hash {
+                        if let Some(info) = cache.get(hash) {
+                            item.metadata = info.metadata.clone();
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     /// Resolves an item's genesis facts (metadata, supply, provenance) from the
     /// storage node by its `genesis_hash`, using the per-instance cache. A 200
     /// resolve is cached permanently (genesis facts are immutable); a 404 or
@@ -789,5 +856,157 @@ mod tests {
             .filter(|r| r.url.path() == item_path())
             .count();
         assert_eq!(hits, 2, "a failed resolve must stay retryable");
+    }
+
+    fn balance_envelope(address_list: serde_json::Value) -> serde_json::Value {
+        serde_json::json!({
+            "balance": {
+                "address_list": address_list,
+                "total": { "tokens": 0, "items": { GH: 5 } }
+            }
+        })
+    }
+
+    fn item_utxo(t_hash: &str, genesis_hash: &str, metadata: serde_json::Value) -> serde_json::Value {
+        serde_json::json!({
+            "out_point": { "n": 0, "t_hash": t_hash },
+            "value": { "Item": { "amount": 5, "genesis_hash": genesis_hash, "metadata": metadata } }
+        })
+    }
+
+    fn item_metadata(balance: &crate::druid::FetchBalanceResponse, address: &str, idx: usize) -> Option<String> {
+        match &balance.address_list[address][idx].value {
+            tw_chain::primitives::asset::Asset::Item(item) => item.metadata.clone(),
+            other => panic!("expected an item asset, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn fetch_balance_enriches_item_metadata_by_default() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/v1/balances"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(balance_envelope(serde_json::json!({
+                "addr1": [ item_utxo("t0", GH, serde_json::Value::Null) ]
+            }))))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path(item_path()))
+            .respond_with(ResponseTemplate::new(200).set_body_json(item_info_body()))
+            .mount(&server)
+            .await;
+        let client = client_for(&server);
+        let balance = client.fetch_balance(&["addr1"], true).await.unwrap();
+        assert_eq!(item_metadata(&balance, "addr1", 0).as_deref(), Some("ticket #1"));
+    }
+
+    #[tokio::test]
+    async fn fetch_balance_dedups_and_caches_one_resolver_call_per_hash() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/v1/balances"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(balance_envelope(serde_json::json!({
+                "addr1": [ item_utxo("t0", GH, serde_json::Value::Null) ],
+                "addr2": [ item_utxo("t1", GH, serde_json::Value::Null) ]
+            }))))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path(item_path()))
+            .respond_with(ResponseTemplate::new(200).set_body_json(item_info_body()))
+            .mount(&server)
+            .await;
+        let client = client_for(&server);
+
+        let first = client.fetch_balance(&["addr1", "addr2"], true).await.unwrap();
+        assert_eq!(item_metadata(&first, "addr1", 0).as_deref(), Some("ticket #1"));
+        assert_eq!(item_metadata(&first, "addr2", 0).as_deref(), Some("ticket #1"));
+
+        // Repeat listing must issue no further resolver calls (cache hit).
+        let second = client.fetch_balance(&["addr1", "addr2"], true).await.unwrap();
+        assert_eq!(item_metadata(&second, "addr1", 0).as_deref(), Some("ticket #1"));
+
+        let resolver_hits = server
+            .received_requests()
+            .await
+            .unwrap()
+            .into_iter()
+            .filter(|r| r.url.path() == item_path())
+            .count();
+        assert_eq!(resolver_hits, 1, "one distinct hash across two addrs and two listings => one call");
+    }
+
+    #[tokio::test]
+    async fn fetch_balance_graceful_degrade_on_resolver_error() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/v1/balances"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(balance_envelope(serde_json::json!({
+                "addr1": [ item_utxo("t0", GH, serde_json::Value::Null) ]
+            }))))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path(item_path()))
+            .respond_with(ResponseTemplate::new(500))
+            .mount(&server)
+            .await;
+        let client = client_for(&server);
+        let balance = client.fetch_balance(&["addr1"], true).await.unwrap();
+        assert!(item_metadata(&balance, "addr1", 0).is_none(), "resolver error => metadata stays null, call still Ok");
+    }
+
+    #[tokio::test]
+    async fn fetch_balance_resolve_miss_does_not_clobber_inline_metadata() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/v1/balances"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(balance_envelope(serde_json::json!({
+                "addr1": [ item_utxo("t0", GH, serde_json::json!("inline meta")) ]
+            }))))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path(item_path()))
+            .respond_with(ResponseTemplate::new(500))
+            .mount(&server)
+            .await;
+        let client = client_for(&server);
+        let balance = client.fetch_balance(&["addr1"], true).await.unwrap();
+        assert_eq!(
+            item_metadata(&balance, "addr1", 0).as_deref(),
+            Some("inline meta"),
+            "a failed resolve must not overwrite metadata the item already carried"
+        );
+    }
+
+    #[tokio::test]
+    async fn fetch_balance_opt_out_issues_no_resolver_calls() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/v1/balances"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(balance_envelope(serde_json::json!({
+                "addr1": [ item_utxo("t0", GH, serde_json::Value::Null) ]
+            }))))
+            .mount(&server)
+            .await;
+        // Register a resolver mock so we can assert it is NEVER consumed.
+        Mock::given(method("GET"))
+            .and(path(item_path()))
+            .respond_with(ResponseTemplate::new(200).set_body_json(item_info_body()))
+            .mount(&server)
+            .await;
+        let client = client_for(&server);
+        let balance = client.fetch_balance(&["addr1"], false).await.unwrap();
+        assert!(item_metadata(&balance, "addr1", 0).is_none(), "enrich=false leaves items unmodified");
+        let resolver_hits = server
+            .received_requests()
+            .await
+            .unwrap()
+            .into_iter()
+            .filter(|r| r.url.path() == item_path())
+            .count();
+        assert_eq!(resolver_hits, 0, "enrich=false must issue zero resolver calls");
     }
 }
