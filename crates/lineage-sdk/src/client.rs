@@ -1,12 +1,15 @@
 //! HTTP client for the Lineage /v1 API.
 
 use std::collections::BTreeMap;
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
 
 use serde::de::DeserializeOwned;
+use tw_chain::primitives::asset::Asset;
 
 use crate::druid::FetchBalanceResponse;
 use crate::error::{ApiProblem, Error, Result};
-use crate::models::{BalancesResponse, DebugData, PaymentAccepted, Supply, TxStatus};
+use crate::models::{BalancesResponse, DebugData, ItemInfo, PaymentAccepted, Supply, TxStatus};
 
 #[derive(Debug, Clone)]
 pub struct Hosts {
@@ -20,6 +23,13 @@ pub struct Client {
     http: reqwest::Client,
     hosts: Hosts,
     api_key: Option<String>,
+    /// Per-instance cache of resolved item genesis facts, keyed by
+    /// `genesis_hash`. `Arc<Mutex<..>>` so cheap `Client` clones share one
+    /// cache (like sdk-js's per-`Wallet` `Map`); no TTL, since genesis facts
+    /// are immutable. Only successful (HTTP 200) resolves are stored, so a
+    /// transient storage error stays retryable. The guard is only ever held
+    /// for a synchronous read/insert, never across an `.await`.
+    item_info_cache: Arc<Mutex<HashMap<String, ItemInfo>>>,
 }
 
 impl Client {
@@ -28,6 +38,7 @@ impl Client {
             http: reqwest::Client::builder().build()?,
             hosts,
             api_key: None,
+            item_info_cache: Arc::new(Mutex::new(HashMap::new())),
         })
     }
 
@@ -175,6 +186,53 @@ impl Client {
         let query: Vec<(&str, String)> = addresses.iter().map(|a| ("address", a.to_string())).collect();
         let envelope: Envelope = self.get_json(&base, "/v1/balances", &query).await?;
         Ok(envelope.balance)
+    }
+
+    /// Resolves an item's genesis facts (metadata, supply, provenance) from the
+    /// storage node by its `genesis_hash`, using the per-instance cache. A 200
+    /// resolve is cached permanently (genesis facts are immutable); a 404 or
+    /// other non-200 is returned as an error and NOT cached, so it stays
+    /// retryable.
+    pub async fn get_item_info(&self, genesis_hash: &str) -> Result<ItemInfo> {
+        if let Some(cached) = self.cached_item_info(genesis_hash) {
+            return Ok(cached);
+        }
+        let info = self.request_item_info(genesis_hash).await?;
+        self.store_item_info(genesis_hash, info.clone());
+        Ok(info)
+    }
+
+    /// One raw storage GET for an item's genesis facts, without touching the
+    /// cache. 404/other non-200 surface as `Err(Error::Api)`.
+    async fn request_item_info(&self, genesis_hash: &str) -> Result<ItemInfo> {
+        let base = self.base_for(NodeClass::Storage);
+        self.get_json(&base, &format!("/v1/items/{genesis_hash}"), &[]).await
+    }
+
+    /// Cache read (clones out so the lock is not held across an `.await`).
+    fn cached_item_info(&self, genesis_hash: &str) -> Option<ItemInfo> {
+        self.item_info_cache
+            .lock()
+            .expect("item info cache mutex poisoned")
+            .get(genesis_hash)
+            .cloned()
+    }
+
+    /// Cache write for a successful resolve.
+    fn store_item_info(&self, genesis_hash: &str, info: ItemInfo) {
+        self.item_info_cache
+            .lock()
+            .expect("item info cache mutex poisoned")
+            .insert(genesis_hash.to_string(), info);
+    }
+
+    /// Best-effort resolve used by balance enrichment: resolves one item and
+    /// caches it on success, swallowing any error so enrichment can never fail
+    /// the listing.
+    async fn resolve_item_info_best_effort(&self, genesis_hash: &str) {
+        if let Ok(info) = self.request_item_info(genesis_hash).await {
+            self.store_item_info(genesis_hash, info);
+        }
     }
 
     /// The base URL of this client's configured mempool host.
@@ -644,5 +702,92 @@ mod tests {
         let client = client_for(&server);
         let v = client.latest_block().await.unwrap();
         assert_eq!(v["block"]["block"]["header"]["b_num"], 5373);
+    }
+
+    const GH: &str = "genesis0abc";
+
+    fn item_info_body() -> serde_json::Value {
+        serde_json::json!({
+            "genesis_hash": GH,
+            "metadata": "ticket #1",
+            "total_amount": 1000,
+            "created": { "block_num": 42, "tx_hash": GH },
+            "creator_address": "addr_creator"
+        })
+    }
+
+    fn item_path() -> String {
+        format!("/v1/items/{GH}")
+    }
+
+    #[tokio::test]
+    async fn get_item_info_returns_genesis_facts_on_200() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path(item_path()))
+            .respond_with(ResponseTemplate::new(200).set_body_json(item_info_body()))
+            .mount(&server)
+            .await;
+        let client = client_for(&server);
+        let info = client.get_item_info(GH).await.unwrap();
+        assert_eq!(info.genesis_hash, GH);
+        assert_eq!(info.metadata.as_deref(), Some("ticket #1"));
+        assert_eq!(info.total_amount, 1000);
+        assert_eq!(info.created.block_num, 42);
+        assert_eq!(info.creator_address.as_deref(), Some("addr_creator"));
+    }
+
+    #[tokio::test]
+    async fn get_item_info_caches_second_call_issues_no_http() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path(item_path()))
+            .respond_with(ResponseTemplate::new(200).set_body_json(item_info_body()))
+            .mount(&server)
+            .await;
+        let client = client_for(&server);
+        let first = client.get_item_info(GH).await.unwrap();
+        let second = client.get_item_info(GH).await.unwrap();
+        assert_eq!(first, second);
+        let hits = server
+            .received_requests()
+            .await
+            .unwrap()
+            .into_iter()
+            .filter(|r| r.url.path() == item_path())
+            .count();
+        assert_eq!(hits, 1, "second call must be served from cache");
+    }
+
+    #[tokio::test]
+    async fn get_item_info_404_errors_and_is_not_cached() {
+        let server = MockServer::start().await;
+        // First request 404s (exhausts after one match), then a later request 200s.
+        Mock::given(method("GET"))
+            .and(path(item_path()))
+            .respond_with(ResponseTemplate::new(404))
+            .up_to_n_times(1)
+            .with_priority(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path(item_path()))
+            .respond_with(ResponseTemplate::new(200).set_body_json(item_info_body()))
+            .with_priority(2)
+            .mount(&server)
+            .await;
+        let client = client_for(&server);
+        assert!(client.get_item_info(GH).await.is_err(), "404 must be an error");
+        // Not cached -> the retry actually hits the network and succeeds.
+        let retried = client.get_item_info(GH).await.unwrap();
+        assert_eq!(retried.metadata.as_deref(), Some("ticket #1"));
+        let hits = server
+            .received_requests()
+            .await
+            .unwrap()
+            .into_iter()
+            .filter(|r| r.url.path() == item_path())
+            .count();
+        assert_eq!(hits, 2, "a failed resolve must stay retryable");
     }
 }
