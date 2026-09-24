@@ -109,6 +109,34 @@ See `crates/lineage-sdk/tests/twoway_flow.rs` for wiremock-backed coverage of al
 methods, and `crates/lineage-sdk/tests/twoway_e2e.rs` for a complete two-wallet live
 example against the testnet.
 
+## Item metadata enrichment
+
+Items only keep their `genesis_hash` after transfer -- inline metadata is dropped on
+spend. `Client::fetch_balance` resolves it back automatically: pass `true` and every
+item in the returned, ordered balance has its genesis `metadata` attached, resolved
+from the configured storage host. Pass `false` to skip enrichment and issue zero
+resolver calls. `Client::get_item_info` fetches an item's full genesis facts directly
+-- metadata, `total_amount`, the `created` block/tx, and `creator_address`. Resolves
+are cached per `Client` instance (genesis facts are immutable, so there's no TTL), and
+enrichment is best-effort: a resolver failure leaves an item's `metadata` unchanged and
+never fails the balance call.
+
+```rust
+use lineage_sdk::Client;
+
+let client = Client::testnet()?;
+
+// Balances with each item's genesis metadata attached (default behaviour):
+let balance = client.fetch_balance(&["addr1", "addr2"], true).await?;
+
+// Skip enrichment (no resolver calls):
+let raw = client.fetch_balance(&["addr1"], false).await?;
+
+// Full genesis facts for a single item:
+let info = client.get_item_info("genesis0abc").await?;
+println!("supply {}, minted at block {}", info.total_amount, info.created.block_num);
+```
+
 ## Wire compatibility
 
 Keys and signatures are byte-for-byte compatible across every Lineage SDK -- a wallet (mnemonic) created in one derives the same addresses and produces the same signatures in all of them. sdk-js is the reference implementation; BIP39/BIP32 derivation, SHA3-256 addresses, ed25519 signing, and the `/v1` transaction serialization (field order is load-bearing -- you sign exactly what you submit) all match it exactly.

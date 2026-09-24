@@ -21,8 +21,8 @@ pub use druid::{
 };
 pub use error::{ApiProblem, Error, Result};
 pub use models::{
-    DruidExpectation, DruidInfo, EncryptedTransaction, Pending2WTxDetails, Pending2WTxStatus,
-    PendingHalf,
+    DruidExpectation, DruidInfo, EncryptedTransaction, ItemCreated, ItemInfo, Pending2WTxDetails,
+    Pending2WTxStatus, PendingHalf,
 };
 pub use signer::{LocalSigner, NodeSigner, PreparedPayment, Receipt, Signer};
 pub use tx::{build_signed_payment, PayOutput, SpendInput};
