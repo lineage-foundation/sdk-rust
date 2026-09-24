@@ -1,12 +1,15 @@
 //! HTTP client for the Lineage /v1 API.
 
 use std::collections::BTreeMap;
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
 
 use serde::de::DeserializeOwned;
+use tw_chain::primitives::asset::Asset;
 
 use crate::druid::FetchBalanceResponse;
 use crate::error::{ApiProblem, Error, Result};
-use crate::models::{BalancesResponse, DebugData, PaymentAccepted, Supply, TxStatus};
+use crate::models::{BalancesResponse, DebugData, ItemInfo, PaymentAccepted, Supply, TxStatus};
 
 #[derive(Debug, Clone)]
 pub struct Hosts {
@@ -20,6 +23,13 @@ pub struct Client {
     http: reqwest::Client,
     hosts: Hosts,
     api_key: Option<String>,
+    /// Per-instance cache of resolved item genesis facts, keyed by
+    /// `genesis_hash`. `Arc<Mutex<..>>` so cheap `Client` clones share one
+    /// cache (like sdk-js's per-`Wallet` `Map`); no TTL, since genesis facts
+    /// are immutable. Only successful (HTTP 200) resolves are stored, so a
+    /// transient storage error stays retryable. The guard is only ever held
+    /// for a synchronous read/insert, never across an `.await`.
+    item_info_cache: Arc<Mutex<HashMap<String, ItemInfo>>>,
 }
 
 impl Client {
@@ -28,6 +38,7 @@ impl Client {
             http: reqwest::Client::builder().build()?,
             hosts,
             api_key: None,
+            item_info_cache: Arc::new(Mutex::new(HashMap::new())),
         })
     }
 
@@ -175,6 +186,120 @@ impl Client {
         let query: Vec<(&str, String)> = addresses.iter().map(|a| ("address", a.to_string())).collect();
         let envelope: Envelope = self.get_json(&base, "/v1/balances", &query).await?;
         Ok(envelope.balance)
+    }
+
+    /// Fetches balances for `addresses` with `address_list` in original JSON
+    /// key order (as [`Self::balances_ordered`]) and, when `enrich` is true,
+    /// attaches each item's genesis `metadata` resolved from the storage node.
+    ///
+    /// Enrichment is best-effort: the DISTINCT item `genesis_hash`es are
+    /// resolved CONCURRENTLY against the storage node's
+    /// `GET /v1/items/{genesis_hash}`, cached per client instance, and written
+    /// onto each item's `metadata`. A resolver error, 404, or missing metadata
+    /// leaves that item's existing `metadata` untouched -- the balance call
+    /// itself never fails because of enrichment. Pass `enrich = false` to skip
+    /// enrichment entirely (zero resolver calls).
+    pub async fn fetch_balance(&self, addresses: &[&str], enrich: bool) -> Result<FetchBalanceResponse> {
+        let mut balance = self.balances_ordered(addresses).await?;
+        if enrich {
+            self.enrich_balance_items(&mut balance).await;
+        }
+        Ok(balance)
+    }
+
+    /// Attaches genesis `metadata` to every item UTXO in a balance (best-effort).
+    /// Resolves the distinct cache-miss `genesis_hash`es concurrently, then
+    /// writes each successfully resolved `metadata` onto its item. Items whose
+    /// hash did not resolve are left exactly as they were (no clobber).
+    async fn enrich_balance_items(&self, balance: &mut FetchBalanceResponse) {
+        // Collect the distinct item genesis hashes in first-seen order.
+        let mut seen = std::collections::HashSet::new();
+        let mut distinct: Vec<String> = Vec::new();
+        for utxos in balance.address_list.values() {
+            for utxo in utxos {
+                if let Asset::Item(item) = &utxo.value {
+                    if let Some(hash) = &item.genesis_hash {
+                        if seen.insert(hash.clone()) {
+                            distinct.push(hash.clone());
+                        }
+                    }
+                }
+            }
+        }
+        if distinct.is_empty() {
+            return;
+        }
+
+        // Only resolve hashes not already cached (dedup across repeat listings).
+        let misses: Vec<String> = {
+            let cache = self.item_info_cache.lock().expect("item info cache mutex poisoned");
+            distinct.into_iter().filter(|hash| !cache.contains_key(hash)).collect()
+        };
+        if !misses.is_empty() {
+            let resolves = misses.iter().map(|hash| self.resolve_item_info_best_effort(hash));
+            futures::future::join_all(resolves).await;
+        }
+
+        // Write back: only overwrite metadata for hashes that resolved (are cached).
+        let cache = self.item_info_cache.lock().expect("item info cache mutex poisoned");
+        for utxos in balance.address_list.values_mut() {
+            for utxo in utxos {
+                if let Asset::Item(item) = &mut utxo.value {
+                    if let Some(hash) = &item.genesis_hash {
+                        if let Some(info) = cache.get(hash) {
+                            item.metadata = info.metadata.clone();
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// Resolves an item's genesis facts (metadata, supply, provenance) from the
+    /// storage node by its `genesis_hash`, using the per-instance cache. A 200
+    /// resolve is cached permanently (genesis facts are immutable); a 404 or
+    /// other non-200 is returned as an error and NOT cached, so it stays
+    /// retryable.
+    pub async fn get_item_info(&self, genesis_hash: &str) -> Result<ItemInfo> {
+        if let Some(cached) = self.cached_item_info(genesis_hash) {
+            return Ok(cached);
+        }
+        let info = self.request_item_info(genesis_hash).await?;
+        self.store_item_info(genesis_hash, info.clone());
+        Ok(info)
+    }
+
+    /// One raw storage GET for an item's genesis facts, without touching the
+    /// cache. 404/other non-200 surface as `Err(Error::Api)`.
+    async fn request_item_info(&self, genesis_hash: &str) -> Result<ItemInfo> {
+        let base = self.base_for(NodeClass::Storage);
+        self.get_json(&base, &format!("/v1/items/{genesis_hash}"), &[]).await
+    }
+
+    /// Cache read (clones out so the lock is not held across an `.await`).
+    fn cached_item_info(&self, genesis_hash: &str) -> Option<ItemInfo> {
+        self.item_info_cache
+            .lock()
+            .expect("item info cache mutex poisoned")
+            .get(genesis_hash)
+            .cloned()
+    }
+
+    /// Cache write for a successful resolve.
+    fn store_item_info(&self, genesis_hash: &str, info: ItemInfo) {
+        self.item_info_cache
+            .lock()
+            .expect("item info cache mutex poisoned")
+            .insert(genesis_hash.to_string(), info);
+    }
+
+    /// Best-effort resolve used by balance enrichment: resolves one item and
+    /// caches it on success, swallowing any error so enrichment can never fail
+    /// the listing.
+    async fn resolve_item_info_best_effort(&self, genesis_hash: &str) {
+        if let Ok(info) = self.request_item_info(genesis_hash).await {
+            self.store_item_info(genesis_hash, info);
+        }
     }
 
     /// The base URL of this client's configured mempool host.
@@ -644,5 +769,244 @@ mod tests {
         let client = client_for(&server);
         let v = client.latest_block().await.unwrap();
         assert_eq!(v["block"]["block"]["header"]["b_num"], 5373);
+    }
+
+    const GH: &str = "genesis0abc";
+
+    fn item_info_body() -> serde_json::Value {
+        serde_json::json!({
+            "genesis_hash": GH,
+            "metadata": "ticket #1",
+            "total_amount": 1000,
+            "created": { "block_num": 42, "tx_hash": GH },
+            "creator_address": "addr_creator"
+        })
+    }
+
+    fn item_path() -> String {
+        format!("/v1/items/{GH}")
+    }
+
+    #[tokio::test]
+    async fn get_item_info_returns_genesis_facts_on_200() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path(item_path()))
+            .respond_with(ResponseTemplate::new(200).set_body_json(item_info_body()))
+            .mount(&server)
+            .await;
+        let client = client_for(&server);
+        let info = client.get_item_info(GH).await.unwrap();
+        assert_eq!(info.genesis_hash, GH);
+        assert_eq!(info.metadata.as_deref(), Some("ticket #1"));
+        assert_eq!(info.total_amount, 1000);
+        assert_eq!(info.created.block_num, 42);
+        assert_eq!(info.creator_address.as_deref(), Some("addr_creator"));
+    }
+
+    #[tokio::test]
+    async fn get_item_info_caches_second_call_issues_no_http() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path(item_path()))
+            .respond_with(ResponseTemplate::new(200).set_body_json(item_info_body()))
+            .mount(&server)
+            .await;
+        let client = client_for(&server);
+        let first = client.get_item_info(GH).await.unwrap();
+        let second = client.get_item_info(GH).await.unwrap();
+        assert_eq!(first, second);
+        let hits = server
+            .received_requests()
+            .await
+            .unwrap()
+            .into_iter()
+            .filter(|r| r.url.path() == item_path())
+            .count();
+        assert_eq!(hits, 1, "second call must be served from cache");
+    }
+
+    #[tokio::test]
+    async fn get_item_info_404_errors_and_is_not_cached() {
+        let server = MockServer::start().await;
+        // First request 404s (exhausts after one match), then a later request 200s.
+        Mock::given(method("GET"))
+            .and(path(item_path()))
+            .respond_with(ResponseTemplate::new(404))
+            .up_to_n_times(1)
+            .with_priority(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path(item_path()))
+            .respond_with(ResponseTemplate::new(200).set_body_json(item_info_body()))
+            .with_priority(2)
+            .mount(&server)
+            .await;
+        let client = client_for(&server);
+        assert!(client.get_item_info(GH).await.is_err(), "404 must be an error");
+        // Not cached -> the retry actually hits the network and succeeds.
+        let retried = client.get_item_info(GH).await.unwrap();
+        assert_eq!(retried.metadata.as_deref(), Some("ticket #1"));
+        let hits = server
+            .received_requests()
+            .await
+            .unwrap()
+            .into_iter()
+            .filter(|r| r.url.path() == item_path())
+            .count();
+        assert_eq!(hits, 2, "a failed resolve must stay retryable");
+    }
+
+    fn balance_envelope(address_list: serde_json::Value) -> serde_json::Value {
+        serde_json::json!({
+            "balance": {
+                "address_list": address_list,
+                "total": { "tokens": 0, "items": { GH: 5 } }
+            }
+        })
+    }
+
+    fn item_utxo(t_hash: &str, genesis_hash: &str, metadata: serde_json::Value) -> serde_json::Value {
+        serde_json::json!({
+            "out_point": { "n": 0, "t_hash": t_hash },
+            "value": { "Item": { "amount": 5, "genesis_hash": genesis_hash, "metadata": metadata } }
+        })
+    }
+
+    fn item_metadata(balance: &crate::druid::FetchBalanceResponse, address: &str, idx: usize) -> Option<String> {
+        match &balance.address_list[address][idx].value {
+            tw_chain::primitives::asset::Asset::Item(item) => item.metadata.clone(),
+            other => panic!("expected an item asset, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn fetch_balance_enriches_item_metadata_by_default() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/v1/balances"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(balance_envelope(serde_json::json!({
+                "addr1": [ item_utxo("t0", GH, serde_json::Value::Null) ]
+            }))))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path(item_path()))
+            .respond_with(ResponseTemplate::new(200).set_body_json(item_info_body()))
+            .mount(&server)
+            .await;
+        let client = client_for(&server);
+        let balance = client.fetch_balance(&["addr1"], true).await.unwrap();
+        assert_eq!(item_metadata(&balance, "addr1", 0).as_deref(), Some("ticket #1"));
+    }
+
+    #[tokio::test]
+    async fn fetch_balance_dedups_and_caches_one_resolver_call_per_hash() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/v1/balances"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(balance_envelope(serde_json::json!({
+                "addr1": [ item_utxo("t0", GH, serde_json::Value::Null) ],
+                "addr2": [ item_utxo("t1", GH, serde_json::Value::Null) ]
+            }))))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path(item_path()))
+            .respond_with(ResponseTemplate::new(200).set_body_json(item_info_body()))
+            .mount(&server)
+            .await;
+        let client = client_for(&server);
+
+        let first = client.fetch_balance(&["addr1", "addr2"], true).await.unwrap();
+        assert_eq!(item_metadata(&first, "addr1", 0).as_deref(), Some("ticket #1"));
+        assert_eq!(item_metadata(&first, "addr2", 0).as_deref(), Some("ticket #1"));
+
+        // Repeat listing must issue no further resolver calls (cache hit).
+        let second = client.fetch_balance(&["addr1", "addr2"], true).await.unwrap();
+        assert_eq!(item_metadata(&second, "addr1", 0).as_deref(), Some("ticket #1"));
+
+        let resolver_hits = server
+            .received_requests()
+            .await
+            .unwrap()
+            .into_iter()
+            .filter(|r| r.url.path() == item_path())
+            .count();
+        assert_eq!(resolver_hits, 1, "one distinct hash across two addrs and two listings => one call");
+    }
+
+    #[tokio::test]
+    async fn fetch_balance_graceful_degrade_on_resolver_error() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/v1/balances"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(balance_envelope(serde_json::json!({
+                "addr1": [ item_utxo("t0", GH, serde_json::Value::Null) ]
+            }))))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path(item_path()))
+            .respond_with(ResponseTemplate::new(500))
+            .mount(&server)
+            .await;
+        let client = client_for(&server);
+        let balance = client.fetch_balance(&["addr1"], true).await.unwrap();
+        assert!(item_metadata(&balance, "addr1", 0).is_none(), "resolver error => metadata stays null, call still Ok");
+    }
+
+    #[tokio::test]
+    async fn fetch_balance_resolve_miss_does_not_clobber_inline_metadata() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/v1/balances"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(balance_envelope(serde_json::json!({
+                "addr1": [ item_utxo("t0", GH, serde_json::json!("inline meta")) ]
+            }))))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path(item_path()))
+            .respond_with(ResponseTemplate::new(500))
+            .mount(&server)
+            .await;
+        let client = client_for(&server);
+        let balance = client.fetch_balance(&["addr1"], true).await.unwrap();
+        assert_eq!(
+            item_metadata(&balance, "addr1", 0).as_deref(),
+            Some("inline meta"),
+            "a failed resolve must not overwrite metadata the item already carried"
+        );
+    }
+
+    #[tokio::test]
+    async fn fetch_balance_opt_out_issues_no_resolver_calls() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/v1/balances"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(balance_envelope(serde_json::json!({
+                "addr1": [ item_utxo("t0", GH, serde_json::Value::Null) ]
+            }))))
+            .mount(&server)
+            .await;
+        // Register a resolver mock so we can assert it is NEVER consumed.
+        Mock::given(method("GET"))
+            .and(path(item_path()))
+            .respond_with(ResponseTemplate::new(200).set_body_json(item_info_body()))
+            .mount(&server)
+            .await;
+        let client = client_for(&server);
+        let balance = client.fetch_balance(&["addr1"], false).await.unwrap();
+        assert!(item_metadata(&balance, "addr1", 0).is_none(), "enrich=false leaves items unmodified");
+        let resolver_hits = server
+            .received_requests()
+            .await
+            .unwrap()
+            .into_iter()
+            .filter(|r| r.url.path() == item_path())
+            .count();
+        assert_eq!(resolver_hits, 0, "enrich=false must issue zero resolver calls");
     }
 }

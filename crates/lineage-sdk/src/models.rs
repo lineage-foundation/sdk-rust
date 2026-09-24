@@ -12,6 +12,27 @@ pub struct Supply {
     pub issued: u64,
 }
 
+/// The genesis facts of an item, as returned by the storage node's
+/// `GET /v1/items/{genesis_hash}` resolver. On the Lineage chain an item keeps
+/// only its `genesis_hash` after transfer (its inline metadata is dropped on
+/// spend), so this is how a transferred item's original metadata, supply, and
+/// provenance are recovered. Field names match the wire body exactly (snake_case).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ItemInfo {
+    pub genesis_hash: String,
+    pub metadata: Option<String>,
+    pub total_amount: u64,
+    pub created: ItemCreated,
+    pub creator_address: Option<String>,
+}
+
+/// Where an item was first minted: the block height and minting transaction hash.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ItemCreated {
+    pub block_num: u64,
+    pub tx_hash: String,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct OutPointRef {
     pub n: u32,
@@ -176,5 +197,24 @@ mod tests {
         let d: DebugData = serde_json::from_str(body).unwrap();
         assert_eq!(d.node_type, "Mempool");
         assert_eq!(d.node_api.len(), 2);
+    }
+
+    #[test]
+    fn deserializes_item_info() {
+        let body = r#"{"genesis_hash":"g1","metadata":"ticket #1","total_amount":1000,"created":{"block_num":42,"tx_hash":"g1"},"creator_address":"addr_c"}"#;
+        let i: ItemInfo = serde_json::from_str(body).unwrap();
+        assert_eq!(i.genesis_hash, "g1");
+        assert_eq!(i.metadata.as_deref(), Some("ticket #1"));
+        assert_eq!(i.total_amount, 1000);
+        assert_eq!(i.created.block_num, 42);
+        assert_eq!(i.creator_address.as_deref(), Some("addr_c"));
+    }
+
+    #[test]
+    fn item_info_metadata_null_is_none() {
+        let body = r#"{"genesis_hash":"g1","metadata":null,"total_amount":1,"created":{"block_num":0,"tx_hash":"t"},"creator_address":null}"#;
+        let i: ItemInfo = serde_json::from_str(body).unwrap();
+        assert!(i.metadata.is_none());
+        assert!(i.creator_address.is_none());
     }
 }
